@@ -287,12 +287,8 @@ _queue_clear() {  # qdir
 # writes are not one step: a drain that ends in between costs one more start,
 # never a task. Codex parks instead after an interrupted turn, so its refusal
 # says what re-arming does then.
-_queue_start() {  # qdir, [mode], [engine]
-    local qdir="$1" mode="${2:-}" engine="${3:-}" state pid
-    case "$mode" in
-        ''|subagents|workflow) ;;
-        *) error "cs -queue start takes subagents or workflow, not '$mode'" ;;
-    esac
+_queue_check_start() {  # qdir, engine
+    local qdir="$1" engine="$2" state pid
     state=$(cat "$qdir/queue.state" 2>/dev/null | tr -d '[:space:]' || true)
     if [ "$state" = draining ]; then
         pid=$(live_lock_pid "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}")
@@ -301,6 +297,15 @@ _queue_start() {  # qdir, [mode], [engine]
         fi
         [ -z "$pid" ] || error "the queue is draining in the running session (pid $pid); the next Stop hands out the next task by itself. To stop the run, cs -queue clear removes the queued tasks with it."
     fi
+}
+
+_queue_start() {  # qdir, [mode], [engine]
+    local qdir="$1" mode="${2:-}"
+    case "$mode" in
+        ''|subagents|workflow) ;;
+        *) error "cs -queue start takes subagents or workflow, not '$mode'" ;;
+    esac
+    _queue_check_start "$qdir" "${3:-}"
     cs_mkdir_inside "$qdir"
     case "$mode" in
         '') rm -f "$qdir/queue.mode" ;;

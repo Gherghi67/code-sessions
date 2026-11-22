@@ -13133,11 +13133,12 @@ _spawn_prepare_launch() {  # session_name, session_dir
             _CS_SPAWN_CLAIM=""
             rm -f "$_claim"
             if [ "$_n" -gt 0 ]; then
-                _queue_set_state "$_qdir" armed \
-                    || error "the seed's $_n task(s) are queued but the queue could not be armed; arm it with: cs $session_name -queue start"
                 if [ "${CS_RUN_ENGINE:-claude}" = antigravity ]; then
-                    _antigravity_queue_arm "$session_dir" ||
-                        error "The seed's $_n task(s) are queued, but the protected Antigravity queue could not be armed. Run: cs $session_name -queue start"
+                    _antigravity_queue_arm "$session_dir" "$_qdir" ||
+                        error "The seed's $_n task(s) are queued, but the Antigravity queue could not be armed. Run: cs $session_name -queue start"
+                else
+                    _queue_set_state "$_qdir" armed \
+                        || error "the seed's $_n task(s) are queued but the queue could not be armed; arm it with: cs $session_name -queue start"
                 fi
             fi
 
@@ -14004,12 +14005,8 @@ _queue_clear() {  # qdir
 # writes are not one step: a drain that ends in between costs one more start,
 # never a task. Codex parks instead after an interrupted turn, so its refusal
 # says what re-arming does then.
-_queue_start() {  # qdir, [mode], [engine]
-    local qdir="$1" mode="${2:-}" engine="${3:-}" state pid
-    case "$mode" in
-        ''|subagents|workflow) ;;
-        *) error "cs -queue start takes subagents or workflow, not '$mode'" ;;
-    esac
+_queue_check_start() {  # qdir, engine
+    local qdir="$1" engine="$2" state pid
     state=$(cat "$qdir/queue.state" 2>/dev/null | tr -d '[:space:]' || true)
     if [ "$state" = draining ]; then
         pid=$(live_lock_pid "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}")
@@ -14018,6 +14015,15 @@ _queue_start() {  # qdir, [mode], [engine]
         fi
         [ -z "$pid" ] || error "the queue is draining in the running session (pid $pid); the next Stop hands out the next task by itself. To stop the run, cs -queue clear removes the queued tasks with it."
     fi
+}
+
+_queue_start() {  # qdir, [mode], [engine]
+    local qdir="$1" mode="${2:-}"
+    case "$mode" in
+        ''|subagents|workflow) ;;
+        *) error "cs -queue start takes subagents or workflow, not '$mode'" ;;
+    esac
+    _queue_check_start "$qdir" "${3:-}"
     cs_mkdir_inside "$qdir"
     case "$mode" in
         '') rm -f "$qdir/queue.mode" ;;
@@ -24183,10 +24189,24 @@ _antigravity_queue_read() {  # protected cache
     jq -ce 'select(type == "object" and (.count | type) == "number")' "$file"
 }
 
-_antigravity_queue_arm() {  # session
-    local dir
+_antigravity_queue_arm() {  # session, queue dir
+    local dir previous=""
     dir=$(_antigravity_queue_cache "$1" create) || return 1
-    _antigravity_queue_record "$dir" '{"count":0}'
+    if [ -e "$dir/drain.json" ] || [ -L "$dir/drain.json" ]; then
+        previous=$(_antigravity_queue_read "$dir") || return 1
+    fi
+    # Publish the protected record before arming the visible queue. Both
+    # writes run under the start guard or before the native child launches.
+    _antigravity_queue_record "$dir" '{"count":0}' || return 1
+    if ! CS_SESSION_DIR="$1" _codex_queue_set_state "$2" armed; then
+        if [ -n "$previous" ]; then
+            _antigravity_queue_record "$dir" "$previous"
+        else
+            rm -f -- "$dir/drain.json"
+        fi
+        return 1
+    fi
+    CS_SESSION_DIR="$1" _codex_queue_rm "$2" queue.mode
 }
 
 _antigravity_queue_clear() {  # queue dir
@@ -24205,9 +24225,9 @@ _antigravity_queue_start() {  # queue dir, mode
         error "Encrypted Antigravity sessions cannot host a walk-away queue. The queued tasks stay available."
     _antigravity_queue_version_ok "${AGY_BIN:-agy}" ||
         error "Antigravity walk-away queues need agy $CS_ANTIGRAVITY_QUEUE_MIN_VERSION or later."
-    _queue_start "$1" "" antigravity
-    _antigravity_queue_arm "$CS_SESSION_DIR" ||
-        error "Could not arm a protected Antigravity queue record. Check CS_CACHE_DIR and retry."
+    _queue_check_start "$1" antigravity
+    _antigravity_queue_arm "$CS_SESSION_DIR" "$1" ||
+        error "Could not arm the Antigravity queue. Check queue.state and CS_CACHE_DIR, then retry."
     local id run_dir
     id=$(jq -r 'select(.engine == "antigravity") | .run_id' "$CS_SESSION_DIR/.cs/local/run-lease.json" 2>/dev/null) || id=""
     if _is_uuid "$id"; then

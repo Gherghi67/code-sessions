@@ -41,8 +41,8 @@ setup() {
     : > "$RUN_DIR/held-$THREAD"
     # Test files all live in the sandbox's temporary folder.
     _codex_run_dir_in_sandbox_root() { _codex_dir_under "$1" "$2"; }
-    _antigravity_queue_arm "$CS_SESSION_DIR"
-    printf 'armed\n' > "$QDIR/queue.state"
+    _antigravity_queue_version_ok() { return 0; }
+    _antigravity_queue_arm "$CS_SESSION_DIR" "$QDIR"
     printf 'first task\n' > "$QDIR/queue/001"
     printf 'second task\n' > "$QDIR/queue/002"
     record 0 USER_EXPLICIT USER_INPUT "go"
@@ -110,7 +110,6 @@ test_terminal_stop_parks_and_allows_rearm_with_a_live_lease() {
     local first reason
     printf 'engine: antigravity\n' > "$QDIR/state"
     setup_palette
-    _antigravity_queue_version_ok() { return 0; }
     for reason in USER_CANCELED ERROR; do
         first=$(stop 0)
         assert_output_contains "$first" 'first task' || return 1
@@ -123,6 +122,39 @@ test_terminal_stop_parks_and_allows_rearm_with_a_live_lease() {
         CS_RUN_ENGINE= run_queue start || return 1
         assert_eq armed "$(cat "$QDIR/queue.state")" || return 1
     done
+}
+
+test_rearm_keeps_the_protected_record_if_the_workspace_write_fails() {
+    local cache before rc=0
+    printf 'engine: antigravity\n' > "$QDIR/state"
+    setup_palette
+    cache=$(_antigravity_queue_cache "$CS_SESSION_DIR")
+    _antigravity_queue_record "$cache" '{"count":2,"park":"test park"}'
+    before=$(cat "$cache/drain.json")
+    rm "$QDIR/queue.state"
+    mkdir "$QDIR/queue.state"
+    (CS_RUN_ENGINE= run_queue start) || rc=$?
+    assert_eq 1 "$rc" "a refused workspace write fails queue start" || return 1
+    assert_eq "$before" "$(cat "$cache/drain.json")" || return 1
+    rmdir "$QDIR/queue.state"
+    CS_RUN_ENGINE= run_queue start || return 1
+    assert_eq armed "$(cat "$QDIR/queue.state")"
+}
+
+test_rearm_keeps_the_queue_idle_if_the_protected_write_fails() {
+    local cache rc=0
+    printf 'engine: antigravity\n' > "$QDIR/state"
+    setup_palette
+    cache=$(_antigravity_queue_cache "$CS_SESSION_DIR")
+    rm "$cache/drain.json"
+    mkdir "$cache/drain.json"
+    printf 'idle\n' > "$QDIR/queue.state"
+    (CS_RUN_ENGINE= run_queue start) || rc=$?
+    assert_eq 1 "$rc" "a refused protected write fails queue start" || return 1
+    assert_eq idle "$(cat "$QDIR/queue.state")" || return 1
+    rmdir "$cache/drain.json"
+    CS_RUN_ENGINE= run_queue start || return 1
+    assert_eq armed "$(cat "$QDIR/queue.state")"
 }
 
 test_finishes_the_active_task_before_yielding_to_rotation() {
@@ -190,8 +222,8 @@ test_keeps_remainder_after_eight_deliveries() {
     assert_not_exists "$QDIR/queue/001" || return 1
     assert_file_exists "$QDIR/queue/002" || return 1
     assert_file_contains "$QDIR/notifications.jsonl" 'continuation budget reached' || return 1
-    _antigravity_queue_arm "$CS_SESSION_DIR"
-    printf 'armed\n' > "$QDIR/queue.state"
+    printf 'engine: antigravity\n' > "$QDIR/state"
+    CS_RUN_ENGINE= run_queue start || return 1
     assert_output_contains "$(stop 0)" 'second task'
 }
 
@@ -212,6 +244,8 @@ run_test test_drains_two_tasks_with_provenance
 run_test test_leaves_an_interrupted_delivery_queued
 run_test test_ignores_busy_and_unrelated_stops
 run_test test_terminal_stop_parks_and_allows_rearm_with_a_live_lease
+run_test test_rearm_keeps_the_protected_record_if_the_workspace_write_fails
+run_test test_rearm_keeps_the_queue_idle_if_the_protected_write_fails
 run_test test_finishes_the_active_task_before_yielding_to_rotation
 run_test test_keeps_a_task_that_reports_failure
 run_test test_finishes_on_a_background_wake

@@ -589,11 +589,12 @@ _spawn_prepare_launch() {  # session_name, session_dir
             _CS_SPAWN_CLAIM=""
             rm -f "$_claim"
             if [ "$_n" -gt 0 ]; then
-                _queue_set_state "$_qdir" armed \
-                    || error "the seed's $_n task(s) are queued but the queue could not be armed; arm it with: cs $session_name -queue start"
                 if [ "${CS_RUN_ENGINE:-claude}" = antigravity ]; then
-                    _antigravity_queue_arm "$session_dir" ||
-                        error "The seed's $_n task(s) are queued, but the protected Antigravity queue could not be armed. Run: cs $session_name -queue start"
+                    _antigravity_queue_arm "$session_dir" "$_qdir" ||
+                        error "The seed's $_n task(s) are queued, but the Antigravity queue could not be armed. Run: cs $session_name -queue start"
+                else
+                    _queue_set_state "$_qdir" armed \
+                        || error "the seed's $_n task(s) are queued but the queue could not be armed; arm it with: cs $session_name -queue start"
                 fi
             fi
 

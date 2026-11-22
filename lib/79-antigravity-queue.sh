@@ -32,10 +32,24 @@ _antigravity_queue_read() {  # protected cache
     jq -ce 'select(type == "object" and (.count | type) == "number")' "$file"
 }
 
-_antigravity_queue_arm() {  # session
-    local dir
+_antigravity_queue_arm() {  # session, queue dir
+    local dir previous=""
     dir=$(_antigravity_queue_cache "$1" create) || return 1
-    _antigravity_queue_record "$dir" '{"count":0}'
+    if [ -e "$dir/drain.json" ] || [ -L "$dir/drain.json" ]; then
+        previous=$(_antigravity_queue_read "$dir") || return 1
+    fi
+    # Publish the protected record before arming the visible queue. Both
+    # writes run under the start guard or before the native child launches.
+    _antigravity_queue_record "$dir" '{"count":0}' || return 1
+    if ! CS_SESSION_DIR="$1" _codex_queue_set_state "$2" armed; then
+        if [ -n "$previous" ]; then
+            _antigravity_queue_record "$dir" "$previous"
+        else
+            rm -f -- "$dir/drain.json"
+        fi
+        return 1
+    fi
+    CS_SESSION_DIR="$1" _codex_queue_rm "$2" queue.mode
 }
 
 _antigravity_queue_clear() {  # queue dir
@@ -54,9 +68,9 @@ _antigravity_queue_start() {  # queue dir, mode
         error "Encrypted Antigravity sessions cannot host a walk-away queue. The queued tasks stay available."
     _antigravity_queue_version_ok "${AGY_BIN:-agy}" ||
         error "Antigravity walk-away queues need agy $CS_ANTIGRAVITY_QUEUE_MIN_VERSION or later."
-    _queue_start "$1" "" antigravity
-    _antigravity_queue_arm "$CS_SESSION_DIR" ||
-        error "Could not arm a protected Antigravity queue record. Check CS_CACHE_DIR and retry."
+    _queue_check_start "$1" antigravity
+    _antigravity_queue_arm "$CS_SESSION_DIR" "$1" ||
+        error "Could not arm the Antigravity queue. Check queue.state and CS_CACHE_DIR, then retry."
     local id run_dir
     id=$(jq -r 'select(.engine == "antigravity") | .run_id' "$CS_SESSION_DIR/.cs/local/run-lease.json" 2>/dev/null) || id=""
     if _is_uuid "$id"; then
