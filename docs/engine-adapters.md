@@ -37,7 +37,7 @@ describe the checked-in integration: Claude supports `launch`, `exact_resume`,
 `startup_context`, `feature_finish`, `rotation`, `engine_switch`, `spawn_brief`, `memory_index`,
 `mail_delivery`, `recovery_autosave`, `clear_rotation`, and `task_queue`; Antigravity supports `launch`,
 `exact_resume`, `startup_context`, `recovery_autosave`, `memory_index`, `rotation`, `engine_switch`,
-`spawn_brief`, `feature_finish`, and `mail_delivery`, and `clear_rotation` inside a run whose launch found
+`spawn_brief`, `feature_finish`, `mail_delivery` and `task_queue`, with `clear_rotation` inside a run whose launch found
 `agy` 1.5.10 or later and cs's SessionStart hook, and `auto_clear` inside one whose watcher types that
 `/clear` for you ([Antigravity sessions](antigravity.md)). These
 names describe the integration's behavior, not a guarantee about every
@@ -347,6 +347,8 @@ run that claims `clear_rotation`, otherwise `/exit` then a fresh managed launch 
 `--from-handoff`. `cs -switch` refuses to leave an engine without
 `rotation` and `engine_switch`, as it refuses to enter one. Before staging a
 seed, `cs -spawn` requires `spawn_brief`. A seed with tasks also requires `task_queue`.
+Antigravity stages those seeds until cs can verify that the native history
+and queue cache are protected by agy's sandbox.
 Antigravity takes a brief through the shared reader and sends the
 kickoff once with `--prompt-interactive`. Its
 `files_changed` reads the payload of `agy`'s PostToolUse hook and keeps

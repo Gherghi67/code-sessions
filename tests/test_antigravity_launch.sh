@@ -955,8 +955,6 @@ test_fresh_launch_starts_agy_in_the_session_with_its_context_rule() {
     assert_output_contains "$output" 'Antigravity via cs' "the launch says what it supports" || return 1
     assert_output_not_contains "$output" 'Mail and the task queue are not available' \
         "mail works under Antigravity, so the launch no longer calls it unavailable" || return 1
-    assert_output_contains "$output" 'The task queue is not available under Antigravity yet' \
-        "the task queue alone is still named unavailable" || return 1
     assert_output_contains "$output" 'then /clear and send go' \
         "a run that takes rotation through /clear names that route" || return 1
     assert_output_contains "$output" 'takes over the session and its cs mail' \
@@ -1259,11 +1257,11 @@ TMUX
     chmod +x "$CS_TMUX_BIN"
 }
 
-test_spawn_refuses_a_task_queue_before_staging_anything() {
+test_old_agy_refuses_a_task_queue_before_staging_anything() {
     local output status=0
     output=$("$CS_BIN" -spawn worker --engine antigravity --task 'do it' 2>&1) || status=$?
     [ "$status" -ne 0 ] || { echo "  FAIL: a task under antigravity must be refused"; return 1; }
-    assert_output_contains "$output" 'Antigravity does not host the walk-away task queue; use --brief without --task' "says why" || return 1
+    assert_output_contains "$output" 'Antigravity walk-away queues need agy 1.5.13 or later' "says why" || return 1
     assert_not_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed" "no seed is staged"
 }
 
@@ -1324,9 +1322,7 @@ test_a_spawn_run_marked_bound_by_a_dangling_link_raises_no_doubt() {
     assert_output_not_contains "$output" 'no turn start' "a bound link reads as bound, as the hook reads it"
 }
 
-# agy hosts no walk-away queue: a seed with tasks (staged under Claude, its
-# window dead) is not taken, nor asked about, at an agy open. The open goes
-# on without it and names the Claude open that takes it.
+# An old agy leaves tasks in their seed and the session can still open.
 test_a_spawn_seed_with_tasks_stays_staged_for_a_claude_open() {
     local output seed="$CS_SESSIONS_ROOT/.spawn/worker.seed"
     output=$("$CS_BIN" worker --engine antigravity 2>&1) || { echo "$output"; return 1; }
@@ -1334,7 +1330,7 @@ test_a_spawn_seed_with_tasks_stays_staged_for_a_claude_open() {
     output=$(CS_SPAWN_TOKEN=$AGY_SPAWN_TOKEN "$CS_BIN" worker 2>&1) \
         || { echo "  FAIL: the open must go on: $output"; return 1; }
     assert_eq "--conversation $AGY_NEW_ID" "$(_agy_argv)" "agy starts without a kickoff" || return 1
-    assert_output_contains "$output" 'only Claude runs the walk-away queue' "the open says why" || return 1
+    assert_output_contains "$output" 'its tasks need an unencrypted Antigravity run with supported agy' "the open says why" || return 1
     assert_output_contains "$output" 'cs worker --engine claude' "and names the open that takes it" || return 1
     assert_file_exists "$seed" "the seed stays staged" || return 1
     assert_not_exists "$(_session_dir worker)/.cs/brief.md" "nothing is delivered" || return 1
@@ -1342,8 +1338,49 @@ test_a_spawn_seed_with_tasks_stays_staged_for_a_claude_open() {
     output=$(CS_ASSUME_TTY=1 "$CS_BIN" foreign --engine antigravity 2>&1 </dev/null) \
         || { echo "  FAIL: the open must go on: $output"; return 1; }
     assert_output_not_contains "$output" 'A spawn seed is staged for this session:' "a seed it cannot take is not offered" || return 1
-    assert_output_contains "$output" 'only Claude runs the walk-away queue' "the open says why" || return 1
+    assert_output_contains "$output" 'its tasks need an unencrypted Antigravity run with supported agy' "the open says why" || return 1
     assert_file_exists "$CS_SESSIONS_ROOT/.spawn/foreign.seed" "the foreign seed stays staged"
+}
+
+test_a_claude_only_install_stages_agy_tasks_without_verified_protection() {
+    local output seed="$CS_SESSIONS_ROOT/.spawn/worker.seed" token dir
+    # Rule out temporary paths and an absent helper as reasons for refusal.
+    export HOME="$TEST_CACHE_DIR/agy-home" AGY_VERSION=1.5.13 AGY_HELP_EXTRA=--sandbox
+    mkdir -p "$HOME"
+    output=$(CS_INSTALL_ENGINES=claude bash "$SCRIPT_DIR/../install.sh" 2>&1 </dev/null) ||
+        { echo "$output"; return 1; }
+    local installed_cs="$HOME/.local/bin/cs"
+    [ -x "$HOME/.local/bin/cs-codex-thread" ] || return 1
+    cmp -s "$HOME/.local/bin/cs-codex-thread" "$SCRIPT_DIR/../bin/cs-codex-thread" || return 1
+    export CS_STATUSLINE_DISABLE=1
+    _fake_tmux
+    output=$(CS_SESSION_NAME=boss "$installed_cs" -spawn worker --engine antigravity --task 'run the tests' 2>&1) ||
+        { echo "$output"; return 1; }
+    assert_file_exists "$seed" || return 1
+    IFS= read -r token < "$seed"
+    output=$(CS_SPAWN_TOKEN=$token AGY_NO_TURN=1 "$installed_cs" worker --engine antigravity 2>&1) ||
+        { echo "$output"; return 1; }
+    assert_output_not_contains "$(_agy_argv)" 'sandbox\|prompt-interactive' "unverified launch does not send the kickoff" || return 1
+    assert_output_contains "$output" 'verified protection for its native history and queue cache' || return 1
+    assert_file_exists "$seed" || return 1
+    dir=$(_session_dir worker)
+    assert_not_exists "$dir/.cs/brief.md" || return 1
+    assert_not_exists "$dir/.cs/local/queue.state"
+}
+
+test_queue_start_leaves_agy_tasks_unarmed_without_verified_protection() {
+    local output dir rc=0
+    export HOME="$TEST_CACHE_DIR/agy-home" AGY_VERSION=1.5.13 AGY_HELP_EXTRA=--sandbox
+    mkdir -p "$HOME"
+    _install_agy_hook || return 1
+    "$CS_BIN" queued --engine antigravity || return 1
+    "$CS_BIN" queued -queue add 'run the tests' || return 1
+    output=$("$CS_BIN" queued -queue start 2>&1) || rc=$?
+    assert_eq 1 "$rc" "no verified protection: $output" || return 1
+    assert_output_contains "$output" 'cannot verify that agy' || return 1
+    dir=$(_session_dir queued)
+    assert_eq 'run the tests' "$(cat "$dir/.cs/local/queue/"*)" || return 1
+    assert_not_exists "$dir/.cs/local/queue.state"
 }
 
 # A seed without its window's token is shown and asked about on a terminal;
@@ -3568,11 +3605,13 @@ run_test test_a_linked_rules_folder_is_never_written_through
 run_test test_a_rules_folder_swapped_for_a_link_mid_write_gets_nothing
 run_test test_capabilities_claim_rotation_but_not_deferred_features
 run_test test_unknown_engine_errors_list_all_three
-run_test test_spawn_refuses_a_task_queue_before_staging_anything
+run_test test_old_agy_refuses_a_task_queue_before_staging_anything
 run_test test_spawn_delivers_its_brief_as_the_first_prompt_once
 run_test test_a_spawn_run_left_before_its_first_turn_never_replays_the_kickoff
 run_test test_a_spawn_run_marked_bound_by_a_dangling_link_raises_no_doubt
 run_test test_a_spawn_seed_with_tasks_stays_staged_for_a_claude_open
+run_test test_a_claude_only_install_stages_agy_tasks_without_verified_protection
+run_test test_queue_start_leaves_agy_tasks_unarmed_without_verified_protection
 run_test test_a_foreign_spawn_seed_is_left_staged_without_a_terminal
 run_test test_a_rotation_open_leaves_a_spawn_seed_staged
 run_test test_an_agy_without_an_interactive_prompt_leaves_a_spawn_seed_staged

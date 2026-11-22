@@ -3322,6 +3322,47 @@ class QueueFileTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.local / 'queue.done').read_bytes(), b'first\nsecond\n')
 
+    def test_complete_parks_an_edited_task_without_losing_it(self):
+        queue = self.local / 'queue'
+        (queue / '001').write_bytes(b'replacement work\n')
+        digest = hashlib.sha256(b'delivered work').hexdigest().encode('ascii')
+        result = self.queue_file('complete', 'queue/001', digest)
+        self.assertEqual(result.returncode, 4, result.stderr)
+        self.assertFalse((self.local / 'queue.done').exists())
+        self.assertEqual([path.read_bytes() for path in queue.iterdir()], [b'replacement work\n'])
+
+    def test_complete_does_not_reopen_the_name_after_claiming_it(self):
+        queue = self.local / 'queue'
+        task = queue / '001'
+        task.write_bytes(b'delivered work\n')
+        helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+        rename = os.rename
+        digest = hashlib.sha256(b'delivered work').hexdigest().encode('ascii')
+
+        def rename_and_replace(source, destination, **kwargs):
+            rename(source, destination, **kwargs)
+            task.write_bytes(b'new work at original name\n')
+
+        with patch.object(os, 'rename', side_effect=rename_and_replace):
+            local_fd = os.open(self.local, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                result = helper['queue_complete'](local_fd, '001', digest)
+            finally:
+                os.close(local_fd)
+        self.assertEqual(result, b'delivered work')
+        self.assertEqual((self.local / 'queue.done').read_bytes(), b'delivered work\n')
+        self.assertEqual(list(queue.iterdir()), [task])
+        self.assertEqual(task.read_bytes(), b'new work at original name\n')
+
+    def test_complete_keeps_work_if_the_done_log_refuses_the_write(self):
+        queue = self.local / 'queue'
+        (queue / '001').write_bytes(b'delivered work\n')
+        (self.local / 'queue.done').mkdir()
+        digest = hashlib.sha256(b'delivered work').hexdigest().encode('ascii')
+        result = self.queue_file('complete', 'queue/001', digest)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual([path.read_bytes() for path in queue.iterdir()], [b'delivered work\n'])
+
     def test_replace_writes_a_new_file_and_leaves_no_temp(self):
         (self.local / 'queue.state').write_bytes(b'armed\n')
         result = self.queue_file('replace', 'queue.state', b'draining\n')

@@ -48,12 +48,13 @@ _cs_antigravity_adapter_capabilities() {
     # rotation: exit and reopen with --from-handoff (or answer r). The launch
     # supplies an interactive prompt; PreInvocation binds and consumes it.
     # spawn_brief: the launch writes a seed's brief in and sends its kickoff
-    # as the first prompt, once; agy hosts no walk-away task queue.
+    # as the first prompt, once. task_queue permits staging task seeds until
+    # the launch can verify agy's sandbox policy.
     # feature_finish: -finish sends a first prompt naming the finish skill's
     # SKILL.md, since agy hands a typed /cs:finish no folder.
     # mail_delivery: PreInvocation shows unread mail at each prompt, and Stop
     # wakes a turn that ends with mail which came while it ran.
-    printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch spawn_brief feature_finish mail_delivery
+    printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch spawn_brief feature_finish mail_delivery task_queue
     # clear_rotation: /clear (or /new) carries an armed rotation into the new
     # conversation, which takes the binding. Claimed only inside a run whose
     # launch found it usable (_antigravity_clear_rebind_on), so the rotate
@@ -76,6 +77,7 @@ _cs_antigravity_adapter_capabilities() {
 # where each turn is a process of its own and the reset proves nothing.
 # shellcheck disable=SC2034  # read by cs -doctor in lib/60-doctor.sh
 CS_ANTIGRAVITY_MAIL_MIN_VERSION=1.5.9
+CS_ANTIGRAVITY_STOP_MAX_CONTINUATIONS=10
 
 # The oldest agy on which a conversation /clear or /new started was measured
 # apart from a subagent's, which the /clear rebind stands on: 1.5.10, on
@@ -675,13 +677,29 @@ $prompt"
     # work, which cs cannot tell (rotation treats a missing consumer the same
     # way), and the brief stays for the agent to read. agy takes one first
     # prompt, so a rotation handoff this open carries keeps the seed staged
-    # for a later open, as does an agy that cannot take the prompt. A seed
-    # with tasks waits for a Claude open, unoffered, since taking it here
-    # could only fail.
+    # for a later open, as does an agy that cannot take the prompt or run
+    # the seed's tasks.
     local spawn_kick="" spawn_wait=""
+    local seed_tasks="" queue_home="" queue_record=""
+    local -a queue_args=()
+    if [ -n "${SESSIONS_ROOT:-}" ] && [ -f "$SESSIONS_ROOT/.spawn/$session_name.seed" ] &&
+        _spawn_seed_has_tasks "$SESSIONS_ROOT/.spawn/$session_name.seed"; then
+        seed_tasks=1
+    fi
+    if [ -z "$vault_home" ]; then
+        if _codex_queue_state "$session_dir/.cs/local" >/dev/null; then
+            queue_record=$(_antigravity_queue_cache "$session_dir") && queue_record=$(_antigravity_queue_read "$queue_record") || queue_record=""
+        fi
+        if [ -n "$seed_tasks" ] || { [ -n "$queue_record" ] && printf '%s\n' "$queue_record" | jq -e '.park == null' >/dev/null; }; then
+            if _antigravity_queue_prepare "$run_dir" "$session_dir" "$agy_bin"; then
+                queue_home=1
+                queue_args=(--sandbox)
+            fi
+        fi
+    fi
     if [ -n "${SESSIONS_ROOT:-}" ] && [ -f "$SESSIONS_ROOT/.spawn/$session_name.seed" ]; then
-        if _spawn_seed_has_tasks "$SESSIONS_ROOT/.spawn/$session_name.seed"; then
-            spawn_wait="it carries tasks and only Claude runs the walk-away queue (take it with: cs $session_name --engine claude)"
+        if [ -n "$seed_tasks" ] && [ -z "$queue_home" ]; then
+            spawn_wait="its tasks need an unencrypted Antigravity run with supported agy, the current cs hooks, and verified protection for its native history and queue cache (take it under Claude with: cs $session_name --engine claude)"
         elif [ -n "$rotation_handoff" ]; then
             spawn_wait="this open carries the rotation handoff"
         elif [ -n "$merge_kick" ]; then
@@ -694,6 +712,9 @@ $prompt"
         fi
         [ -z "$spawn_wait" ] \
             || warn "A spawn seed is staged for $session_name; it stays staged for a later open, since $spawn_wait."
+    fi
+    if [ -n "$queue_record" ] && [ -z "$queue_home" ] && printf '%s\n' "$queue_record" | jq -e '.park == null' >/dev/null; then
+        warn "The Antigravity tasks stay queued. This run needs the current cs hooks, supported agy, and verified protection for its native history and queue cache."
     fi
     # The automatic /clear after a rotation: a watcher beside agy types
     # /clear and go once a turn ends with a handoff armed
@@ -724,11 +745,11 @@ $prompt"
     # _antigravity_run_mark swallows a failed write, and a run whose mark is
     # missing keeps the binding and the mail with its first conversation.
     if [ -n "$autoclear" ]; then
-        printf '%s\n' "Antigravity via cs: session context is on ($rule_shown), $reopens. Rotate with /cs:rotate, and cs types /clear and go for you $grace s after that turn ends. The task queue is not available under Antigravity yet. A conversation started with /clear or /new takes over the session and its cs mail."
+        printf '%s\n' "Antigravity via cs: session context is on ($rule_shown), $reopens. Rotate with /cs:rotate, and cs types /clear and go for you $grace s after that turn ends. A conversation started with /clear or /new takes over the session and its cs mail."
     elif [ -n "$run_dir" ] && [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ]; then
-        printf '%s\n' "Antigravity via cs: session context is on ($rule_shown), $reopens. Rotate with /cs:rotate, then /clear and send go. The task queue is not available under Antigravity yet. A conversation started with /clear or /new takes over the session and its cs mail."
+        printf '%s\n' "Antigravity via cs: session context is on ($rule_shown), $reopens. Rotate with /cs:rotate, then /clear and send go. A conversation started with /clear or /new takes over the session and its cs mail."
     else
-        printf '%s\n' "Antigravity via cs: session context is on ($rule_shown), $reopens. Rotate with /cs:rotate, then /exit and cs $session_name --from-handoff. The task queue is not available under Antigravity yet. A conversation started with /clear or /new gets no cs mail until you reopen the session."
+        printf '%s\n' "Antigravity via cs: session context is on ($rule_shown), $reopens. Rotate with /cs:rotate, then /exit and cs $session_name --from-handoff. A conversation started with /clear or /new gets no cs mail until you reopen the session."
     fi
     if [ -n "$rotation_handoff" ]; then
         cs_run_with_lease "$meta_dir" _launch_handoff_prepare "$session_dir" antigravity "$rotation_handoff" || {
@@ -743,7 +764,7 @@ $prompt"
     local -a home_args=()
     [ -z "$vault_home" ] || home_args=(env HOME="$vault_home" CS_ANTIGRAVITY_SHARED_HOME="$shared_home" CS_ANTIGRAVITY_VAULT_RUN="$CS_RUN_ID")
     cs_run_child ${home_args[@]+"${home_args[@]}"} "$agy_bin" ${reopen_args[@]+"${reopen_args[@]}"} ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} \
-        ${statusline_args[@]+"${statusline_args[@]}"} ${prompt_args[@]+"${prompt_args[@]}"} || status=$?
+        ${statusline_args[@]+"${statusline_args[@]}"} ${queue_args[@]+"${queue_args[@]}"} ${prompt_args[@]+"${prompt_args[@]}"} || status=$?
     # The watcher goes as soon as agy does, before anything else the run does
     # (a switch's relaunch would otherwise get its keys). Keys it typed just
     # before agy exited can wait unread in the terminal and would run in the
@@ -1214,6 +1235,9 @@ _antigravity_hook_post_tool_use() {  # payload
     if [ -n "${_cs_private_pin_dir:-}" ] && run_dir=$(_antigravity_run_dir); then
         _antigravity_hook_vault_check "$run_dir" || return 0
     fi
+    if [ -f "$CS_SESSION_DIR/.cs/local/queue.current" ] && _antigravity_payload_read "$1"; then
+        _antigravity_queue_tool_failure "$1" || true
+    fi
     event=$(printf '%s' "$1" | cs_engine_call antigravity files_changed) || return 0
     [ -n "$event" ] || return 0
     script="$(_antigravity_plugin_dir)/scripts/autosave-commits.sh"
@@ -1339,18 +1363,27 @@ _antigravity_hook_mail_digest() {  # conversation_id
 # automatic /clear's count (_antigravity_autoclear_arm).
 _antigravity_hook_stop() {  # payload
     _antigravity_payload_read "$1" || return 0
-    _antigravity_hook_mail_wake
+    local queue_reply
+    if queue_reply=$(_antigravity_queue_stop "$1") && [ -n "$queue_reply" ]; then
+        ANTIGRAVITY_HOOK_REPLY=$queue_reply
+        return 0
+    fi
+    _antigravity_hook_mail_wake "$1"
     [ -n "$ANTIGRAVITY_HOOK_REPLY" ] || _antigravity_autoclear_arm
 }
 
 # The mail wake for the Stop _antigravity_hook_stop has read: its answer goes
 # to ANTIGRAVITY_HOOK_REPLY, or none.
-_antigravity_hook_mail_wake() {
+_antigravity_hook_mail_wake() {  # payload
     local mail state answer nl='
 '
     # shellcheck disable=SC2034  # set and read by cs_mail_wake_* (lib/02-shared.sh)
     local MAIL_UNREAD=0 MAIL_FRESH=0 MAIL_NAMES="" MAIL_FROM="" MAIL_WAKES=0
     [ "$AGY_HOOK_TERMINATION" = NO_TOOL_CALL ] || return 0
+    # A Stop at execution 10 ignores further continuations, so do not
+    # record mail as announced there. Missing counters retain old behavior.
+    ! printf '%s\n' "${1:-}" | jq -e --argjson max "$CS_ANTIGRAVITY_STOP_MAX_CONTINUATIONS" \
+        '.executionNum | numbers | . >= $max' >/dev/null 2>&1 || return 0
     mail=$(_antigravity_mail_dir "$AGY_HOOK_ID") || return 0
     [ -d "$mail/new" ] || return 0
     state=$(_antigravity_mail_state_dir make) || return 0

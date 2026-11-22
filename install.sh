@@ -2115,9 +2115,9 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "311bca1e1a61fc848ac34f1e16712b094cd88e9554f7aeef55c27a60d58871a1  bin/cs"
+    "79192708dc9147de0d666532d1aa1ff400a890963f774eed6aef31477ce381a4  bin/cs"
     "daa73d86fbf428a84f5ef4c1f8fa355d6295c056dbc690eb2e433a8ff03f8437  bin/cs-secrets"
-    "f981d4b1ce99bc3eab09d408a0e37d705d0fda55743b3ee96d05c60dd4421f00  bin/cs-codex-thread"
+    "aa2189ba7d67ce63eaea645fbd54ec0ee92741c0c0d1b037441c6093106158f3  bin/cs-codex-thread"
     "92fbf3b94c270ac607ea8796e826b95d7a062b25cbced9bf1004ff9516224775  bin/cs-statusline"
     "5f8a8f43eabd2c51c81e4b2c53728205231f02fe039fd62463cc6855356e461e  bin/cs-subagent-statusline"
     "b1272ea923569f2c56fcac2900bdb8b52d98a7fe400031fe92ad067ed62aa65d  bin/cs-statusline-agy"
@@ -2598,9 +2598,10 @@ if _install_has_engine claude; then
     # The subagent status line sources cs-statusline from this directory.
     _bins+=(cs-statusline cs-subagent-statusline)
 fi
-# Antigravity runs on any install, where agy is (see its plugin below), and
-# its status line runs cs-statusline from this directory.
+# Antigravity runs on any install where agy is (see its plugin below).
+# Its task queue uses cs-codex-thread and its status line runs cs-statusline.
 if command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || [ -d "$HOME/.gemini/antigravity-cli" ]; then
+    _install_has_engine codex || _bins+=(cs-codex-thread)
     _install_has_engine claude || _bins+=(cs-statusline)
     _bins+=(cs-statusline-agy)
 fi
