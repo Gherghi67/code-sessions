@@ -3325,7 +3325,8 @@ class QueueFileTests(unittest.TestCase):
     def test_complete_parks_an_edited_task_without_losing_it(self):
         queue = self.local / 'queue'
         (queue / '001').write_bytes(b'replacement work\n')
-        result = self.queue_file('complete', 'queue/001', b'delivered work')
+        digest = hashlib.sha256(b'delivered work').hexdigest().encode('ascii')
+        result = self.queue_file('complete', 'queue/001', digest)
         self.assertEqual(result.returncode, 4, result.stderr)
         self.assertFalse((self.local / 'queue.done').exists())
         self.assertEqual([path.read_bytes() for path in queue.iterdir()], [b'replacement work\n'])
@@ -3336,6 +3337,7 @@ class QueueFileTests(unittest.TestCase):
         task.write_bytes(b'delivered work\n')
         helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
         rename = os.rename
+        digest = hashlib.sha256(b'delivered work').hexdigest().encode('ascii')
 
         def rename_and_replace(source, destination, **kwargs):
             rename(source, destination, **kwargs)
@@ -3344,7 +3346,7 @@ class QueueFileTests(unittest.TestCase):
         with patch.object(os, 'rename', side_effect=rename_and_replace):
             local_fd = os.open(self.local, os.O_RDONLY | os.O_DIRECTORY)
             try:
-                result = helper['queue_complete'](local_fd, '001', b'delivered work')
+                result = helper['queue_complete'](local_fd, '001', digest)
             finally:
                 os.close(local_fd)
         self.assertEqual(result, b'delivered work')
@@ -3356,7 +3358,8 @@ class QueueFileTests(unittest.TestCase):
         queue = self.local / 'queue'
         (queue / '001').write_bytes(b'delivered work\n')
         (self.local / 'queue.done').mkdir()
-        result = self.queue_file('complete', 'queue/001', b'delivered work')
+        digest = hashlib.sha256(b'delivered work').hexdigest().encode('ascii')
+        result = self.queue_file('complete', 'queue/001', digest)
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertEqual([path.read_bytes() for path in queue.iterdir()], [b'delivered work\n'])
 

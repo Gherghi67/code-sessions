@@ -107,6 +107,31 @@ SH
     assert_eq snapshot "$(cat "$CS_TEST_SNAPSHOTS")" "one snapshot confirms and advances the queue"
 }
 
+test_protected_receipt_keeps_a_digest_of_the_task_body() {
+    local first cache
+    first=$(stop 0)
+    assert_output_contains "$first" 'first task' || return 1
+    cache=$(_antigravity_queue_cache "$CS_SESSION_DIR")
+    assert_file_not_contains "$cache/drain.json" 'first task' || return 1
+    jq -e '.task.digest | test("^[0-9a-f]{64}$")' "$cache/drain.json" >/dev/null || return 1
+    receipt "$first" 2
+    record 3 MODEL PLANNER_RESPONSE "finished"
+    assert_output_contains "$(stop 1)" 'second task' || return 1
+    assert_file_contains "$QDIR/queue.done" '^first task$'
+}
+
+test_finishes_a_receipt_written_by_the_previous_build() {
+    local first cache state
+    first=$(stop 0)
+    cache=$(_antigravity_queue_cache "$CS_SESSION_DIR")
+    state=$(jq -c 'del(.task.digest) | .task.body = "first task"' "$cache/drain.json")
+    _antigravity_queue_record "$cache" "$state"
+    receipt "$first" 2
+    record 3 MODEL PLANNER_RESPONSE "finished"
+    assert_output_contains "$(stop 1)" 'second task' || return 1
+    assert_file_contains "$QDIR/queue.done" '^first task$'
+}
+
 test_leaves_an_interrupted_delivery_queued() {
     local first
     first=$(stop 0)
@@ -263,6 +288,8 @@ test_rejects_a_link_in_native_history() {
 
 run_test test_drains_two_tasks_with_provenance
 run_test test_reuses_confirmation_to_deliver_the_next_task
+run_test test_protected_receipt_keeps_a_digest_of_the_task_body
+run_test test_finishes_a_receipt_written_by_the_previous_build
 run_test test_leaves_an_interrupted_delivery_queued
 run_test test_ignores_busy_and_unrelated_stops
 run_test test_terminal_stop_parks_and_allows_rearm_with_a_live_lease

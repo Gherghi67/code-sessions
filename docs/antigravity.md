@@ -823,8 +823,10 @@ main conversation works on one task at a time and agy's approvals still
 apply. Use plain `cs -queue start` for Antigravity.
 
 cs checks the native transcript for the task and its final reply before
-marking it done. A reported failure, too many tool failures, or an
-unconfirmed reply parks the queue with the current task still present.
+marking it done. The protected queue record keeps a receipt and a SHA-256
+digest for checking the queued text at completion. A reported failure, too
+many tool failures, or an unconfirmed reply parks the queue with the
+current task still present.
 After eight deliveries per arm, or when earlier continuations leave too
 little room in the turn, the remainder stays queued. Context and quota
 remain available on the status line when configured. The queue uses its
@@ -869,8 +871,9 @@ still in `.cs/brief.md`.
 
 `agy` takes one first prompt. An open that carries a rotation handoff keeps
 the seed staged for a later open, and so does an `agy` whose `--help` does not
-list `--prompt-interactive`. A seed with tasks, staged for Claude, also stays
-staged, unoffered, for `cs <name> --engine claude`. All three say so. An open
+list `--prompt-interactive`. A seed with tasks also stays staged when the
+launch lacks the [Antigravity queue prerequisites](#walk-away-task-queue).
+You can open it under Claude with `cs <name> --engine claude`. An open
 outside the spawn's window shows any other seed and asks before taking it, as
 under Claude and Codex. Without a terminal, it leaves the seed staged.
 

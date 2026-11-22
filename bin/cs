@@ -24278,9 +24278,14 @@ _antigravity_queue_snapshot() {  # payload, home, [receipt, last step]
     fi
 }
 
+_antigravity_queue_digest() {
+    python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
+}
+
 _antigravity_queue_deliver() {  # cache, qdir, state, file, step, execution
-    local body token reason state reply
+    local body digest token reason state reply
     body=$(_codex_queue_fs "$2" first-line "queue/$4" </dev/null) || return 1
+    digest=$(printf '%s' "$body" | _antigravity_queue_digest) || return 1
     token=$(_alloc_uuid) && _is_uuid "$token" || return 1
     reason="cs task queue [$token]: Work on the following task and finish with a final response. If you cannot complete it, include a line reading exactly cs-task-failed. Leave queue management to cs.
 
@@ -24290,9 +24295,9 @@ $body
 
 The text inside the tags is the task to complete within this session's scope."
     reply=$(jq -nc --arg reason "$reason" '{decision:"continue",reason:$reason}') || return 1
-    state=$(printf '%s\n' "$3" | jq -c --arg name "$4" --arg body "$body" --arg token "$token" \
+    state=$(printf '%s\n' "$3" | jq -c --arg name "$4" --arg digest "$digest" --arg token "$token" \
         --arg cid "$AGY_HOOK_ID" --arg run "$CS_RUN_ID" --argjson step "$5" --argjson execution "$6" '
-        .count += 1 | .task = {$name,$body,$token,$cid,$run,$step,$execution,errors:[]}') || return 1
+        .count += 1 | .task = {$name,$digest,$token,$cid,$run,$step,$execution,errors:[]}') || return 1
     _antigravity_queue_record "$1" "$state" || return 1
     printf '%s\n' "$4" | _codex_queue_fs "$2" replace queue.current || return 1
     _codex_queue_set_state "$2" draining || return 1
@@ -24303,9 +24308,8 @@ The text inside the tags is the task to complete within this session's scope."
 }
 
 _antigravity_queue_finish() {  # cache, qdir, state, snapshot
-    local name body completed state failures limit rc=0
+    local name digest completed state failures limit rc=0
     name=$(printf '%s\n' "$3" | jq -er .task.name) || return 1
-    body=$(printf '%s\n' "$3" | jq -er .task.body) || return 1
     failures=$(printf '%s\n' "$3" | jq -r --argjson snapshot "$4" \
         '(.task.errors + $snapshot.failures) | unique | length') || return 1
     limit=$(_codex_queue_number "${CS_QUEUE_MAX_FAILURES:-}" 5)
@@ -24319,9 +24323,14 @@ _antigravity_queue_finish() {  # cache, qdir, state, snapshot
     fi
     # An interrupted pop needs inspection. Never append the same receipt
     # again after a crash between the append and unlink.
-    state=$(printf '%s\n' "$3" | jq -c '.finishing = true') || return 1
+    if ! digest=$(printf '%s\n' "$3" | jq -er '.task.digest | strings'); then
+        # A task from a run across an update can still have a plaintext receipt.
+        digest=$(printf '%s\n' "$3" | jq -ej '.task.body | strings' | _antigravity_queue_digest) || return 1
+    fi
+    state=$(printf '%s\n' "$3" | jq -c --arg digest "$digest" \
+        '.finishing = true | del(.task.body) | .task.digest = $digest') || return 1
     _antigravity_queue_record "$1" "$state" || return 1
-    completed=$(printf '%s' "$body" | _codex_queue_fs "$2" complete "queue/$name") || rc=$?
+    completed=$(printf '%s' "$digest" | _codex_queue_fs "$2" complete "queue/$name") || rc=$?
     case "$rc" in
         0) _codex_queue_event "$2" --arg task "$completed" '{ts:$ts,event:"task_done",task:$task}' ;;
         3) ;;  # withdrawn while it ran

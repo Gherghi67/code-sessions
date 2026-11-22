@@ -10,6 +10,7 @@ import argparse
 from collections import defaultdict
 import contextlib
 import datetime
+import hashlib
 import io
 import json
 import math
@@ -1001,7 +1002,9 @@ def queue_file_append(folder, base, data):
         os.close(fd)
 
 
-def queue_complete(local, base, expected):
+def queue_complete(local, base, digest):
+    if not re.fullmatch(rb"[0-9a-f]{64}", digest):
+        raise BootstrapError("complete requires a SHA-256 digest")
     queue = os.open("queue", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=local)
     try:
         # In the same directory the rename claims exactly one item, even on
@@ -1019,7 +1022,7 @@ def queue_complete(local, base, expected):
                 raise BootstrapError("unexpected queue file")
             line = stream.readline()
             body = line[:-1] if line.endswith(b"\n") else line
-            if body != expected or stream.read(1):
+            if hashlib.sha256(body).hexdigest().encode("ascii") != digest or stream.read(1):
                 raise QueueTaskChanged("the active task changed while it ran")
             queue_file_append(local, "queue.done", body + b"\n")
             current = os.stat(claimed, dir_fd=queue, follow_symlinks=False)
