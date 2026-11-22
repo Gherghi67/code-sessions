@@ -23206,7 +23206,7 @@ Scope: complete the behavior the task asks for. When the task is ambiguous, foll
 _codex_queue_history_protected() {  # dir
     local session
     case "$1" in "$CS_SESSION_DIR"|"$CS_SESSION_DIR"/*) return 1 ;; esac
-    session=$(cd -P "$CS_SESSION_DIR" 2>/dev/null && pwd -P) || return 1
+    session=$(cd -P -- "$CS_SESSION_DIR" 2>/dev/null && pwd -P) || return 1
     case "$1" in "$session"|"$session"/*) return 1 ;; esac
     ! _codex_run_dir_in_config_root "$1" "$CS_SESSION_DIR" \
         && ! _codex_run_dir_in_sandbox_root "$1" "$CS_SESSION_DIR"
