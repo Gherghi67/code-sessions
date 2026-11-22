@@ -869,6 +869,82 @@ class QueueFileMissing(BootstrapError):
     """The file --queue-file first-line reads is not there."""
 
 
+def antigravity_queue_snapshot(args):
+    """Read the bound agy conversation at a Stop hook, from its native history."""
+    path = Path(args.antigravity_queue_snapshot)
+    parts = (".gemini", "antigravity-cli", "brain", args.thread_id,
+             ".system_generated", "logs", "transcript_full.jsonl")
+    home = Path(args.home)
+    if path != home.joinpath(*parts):
+        raise BootstrapError("unexpected Antigravity transcript path")
+    directory = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    finally:
+        os.close(directory)
+
+    # Agy can rewrite a step when a background tool finishes. Locate the
+    # task beyond the last step at delivery instead of trusting a byte offset.
+    start = args.queue_offset if args.queue_offset is not None else -1
+    marker = f"\nStop hook blocked termination: cs task queue [{args.queue_receipt}]"
+    delivered = False
+    latest = -1
+    last_type = ""
+    final = None
+    failures = []
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+            raise BootstrapError("unexpected Antigravity transcript file")
+        if info.st_size > 64 * 1024 * 1024:
+            raise BootstrapError("Antigravity transcript exceeds the queue read limit")
+        for raw in stream:
+            try:
+                record = json.loads(raw)
+            except (ValueError, RecursionError) as exc:
+                raise BootstrapError("incomplete Antigravity transcript") from exc
+            if not isinstance(record, dict):
+                raise BootstrapError("invalid Antigravity transcript record")
+            step = record.get("step_index")
+            if type(step) is not int or step <= latest:
+                raise BootstrapError("unexpected Antigravity transcript order")
+            latest = step
+            kind = record.get("type")
+            source = record.get("source")
+            status = record.get("status")
+            content = record.get("content")
+            last_type = kind
+            if step <= start:
+                continue
+            if source == "USER_EXPLICIT" and kind == "USER_INPUT" and delivered:
+                raise BootstrapError("a new user turn followed the Antigravity queue receipt")
+            if (source == "SYSTEM" and kind == "SYSTEM_MESSAGE" and status == "DONE"
+                    and isinstance(content, str) and marker + ":" in content):
+                delivered = True
+            elif delivered and source == "MODEL":
+                if kind == "PLANNER_RESPONSE":
+                    final = content if status == "DONE" and isinstance(content, str) and content.strip() else None
+                elif status == "ERROR" or antigravity_shell_failed(kind, content):
+                    failures.append(step)
+    final_confirmed = last_type == "PLANNER_RESPONSE" and final is not None
+    task_failed = final_confirmed and any(line in ("cs-task-failed", "`cs-task-failed`")
+                                         for line in final.splitlines())
+    return json.dumps(dict(delivered=delivered, last_step=latest, last_type=last_type,
+                           final=final_confirmed, task_failed=task_failed, failures=failures))
+
+
+def antigravity_shell_failed(kind, content):
+    if kind != "GENERIC" or not isinstance(content, str):
+        return False
+    header = content.partition("\nCommand output:\n")[0]
+    return any(re.fullmatch(r"Command exited with code -?[1-9][0-9]*\.", line)
+               for line in header.splitlines())
+
+
 QUEUE_FILE_OPS = ("append", "replace", "unlink", "first-line")
 QUEUE_FILE_MISSING = 3
 
@@ -2085,6 +2161,8 @@ def main():
                         help="print yes when CODEX_HOME keeps --thread-id's history, else no")
     parser.add_argument("--queue-snapshot", metavar="ROLLOUT",
                         help="read the active rollout for a queue Stop hook")
+    parser.add_argument("--antigravity-queue-snapshot", metavar="TRANSCRIPT",
+                        help="read the active Antigravity transcript for a queue Stop hook")
     parser.add_argument("--queue-turn")
     parser.add_argument("--queue-receipt")
     parser.add_argument("--queue-offset", type=int, metavar="BYTES",
@@ -2137,6 +2215,13 @@ def main():
             parser.error("--queue-snapshot needs --thread-id and --queue-turn")
         if args.queue_offset is not None and args.queue_offset < 0:
             parser.error("--queue-offset must not be negative")
+    elif args.antigravity_queue_snapshot is not None:
+        if args.thread_id is None or args.home is None:
+            parser.error("--antigravity-queue-snapshot needs --thread-id and --home")
+        if args.queue_receipt is not None and not THREAD_ID.fullmatch(args.queue_receipt):
+            parser.error("--queue-receipt must be a UUID")
+        if args.queue_offset is not None and args.queue_offset < 0:
+            parser.error("--queue-offset must not be negative")
     elif args.queue_file is not None:
         if args.queue_file[0] not in QUEUE_FILE_OPS or args.session_dir is None:
             parser.error("--queue-file needs append, replace, unlink or first-line, a name and --session-dir")
@@ -2174,6 +2259,8 @@ def main():
             printed = has_thread(args)
         elif args.queue_snapshot is not None:
             printed = queue_snapshot(args)
+        elif args.antigravity_queue_snapshot is not None:
+            printed = antigravity_queue_snapshot(args)
         elif args.queue_file is not None:
             queue_file(args)
             return 0
@@ -2194,6 +2281,7 @@ def main():
             else "could not write the vault Codex home's config.toml" if args.seed_config
             else "could not look for the thread's history" if args.has_thread
             else "could not read the active rollout" if args.queue_snapshot is not None
+            else "could not read the Antigravity transcript" if args.antigravity_queue_snapshot is not None
             else "could not read the queue file" if args.queue_file and args.queue_file[0] == "first-line"
             else "could not write the queue file" if args.queue_file is not None
             else "could not write the Claude transcript" if args.export_claude

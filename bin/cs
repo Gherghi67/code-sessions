@@ -13035,6 +13035,12 @@ _spawn_prepare_launch() {  # session_name, session_dir
             local _has_brief=0 _qdir
             if [ "$_n" -gt 0 ]; then
                 _spawn_refuse_queue "${CS_RUN_ENGINE:-claude}" " (seed kept)" "$session_dir"
+                if [ "${CS_RUN_ENGINE:-claude}" = antigravity ]; then
+                    local _agy_run_dir
+                    _agy_run_dir=$(_antigravity_run_dir) && [ -f "$_agy_run_dir/queue-home" ] &&
+                        [ ! -L "$_agy_run_dir/queue-home" ] ||
+                        error "This Antigravity run cannot drain the task queue (seed kept)."
+                fi
             fi
             if [ "${CS_RUN_ENGINE:-claude}" = codex ] && [ -e "$session_dir/.cs/local/spawn-kick.json" ]; then
                 error "An earlier spawn kickoff is pending; deliver it before taking another seed (seed kept)"
@@ -13129,6 +13135,10 @@ _spawn_prepare_launch() {  # session_name, session_dir
             if [ "$_n" -gt 0 ]; then
                 _queue_set_state "$_qdir" armed \
                     || error "the seed's $_n task(s) are queued but the queue could not be armed; arm it with: cs $session_name -queue start"
+                if [ "${CS_RUN_ENGINE:-claude}" = antigravity ]; then
+                    _antigravity_queue_arm "$session_dir" ||
+                        error "The seed's $_n task(s) are queued, but the protected Antigravity queue could not be armed. Run: cs $session_name -queue start"
+                fi
             fi
 
         fi
@@ -13147,6 +13157,13 @@ _spawn_take_back_tasks() {  # staged paths; _left belongs to the seed consumer
 _spawn_refuse_queue() {  # engine, suffix, session_dir (when it exists)
     local status=0
     if cs_engine_supports "$1" task_queue; then
+        if [ "$1" = antigravity ]; then
+            if [ -n "${3:-}" ] && _switch_session_encrypted "$3"; then
+                error "Encrypted Antigravity sessions cannot host a walk-away queue. Use --brief without --task$2"
+            fi
+            _antigravity_queue_version_ok "${AGY_BIN:-agy}" ||
+                error "Antigravity walk-away queues need agy $CS_ANTIGRAVITY_QUEUE_MIN_VERSION or later. Upgrade agy or use --brief without --task$2"
+        fi
         if [ "$1" = codex ] && [ -n "${3:-}" ] && is_session_dir "$3" && _switch_session_encrypted "$3"; then
             error "An encrypted session cannot host a Codex walk-away queue: on macOS the agent can move its Codex home out from under cs's read-only rule and rewrite the history cs confirms tasks by. Use --brief without --task$2"
         fi
@@ -13158,10 +13175,7 @@ _spawn_refuse_queue() {  # engine, suffix, session_dir (when it exists)
         esac
         return 0
     fi
-    case "$1" in
-        antigravity) error "Antigravity does not host the walk-away task queue; use --brief without --task$2" ;;
-        *) error "$1 does not host the walk-away task queue; use --brief without --task$2" ;;
-    esac
+    error "$1 does not host the walk-away task queue; use --brief without --task$2"
 }
 
 # Only an owned, fresh seed or an already accepted receipt bypasses native
@@ -14025,6 +14039,7 @@ _queue_log() {  # qdir
         $inbox | split("\n")[] | fromjson? // empty |
         (.ts | strflocaltime("%Y-%m-%d %H:%M")) + "  " + .event +
         (if .task then ": " + .task
+         elif .detail then ": " + .detail
          elif .reason then ": " + .reason + " (" + (.reading|tostring) + " >= " + (.limit|tostring) + "), " + (.remaining|tostring) + " remaining"
          elif .done then ": " + (.done|tostring) + " done"
          else "" end)
@@ -14047,6 +14062,14 @@ run_queue() {
         || error "this session keeps its queue in encrypted storage that is not mounted (.cs/private $(cs_private_state "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}")). Mount it, then retry."
     _queue_convert_legacy "$qdir"
     local sub="${1:-list}"
+    local engine="${CS_RUN_ENGINE:-}" meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    case "$sub" in
+        start|clear)
+            if [ -z "$engine" ] && [ -n "${CS_SESSION_DIR:-}" ]; then
+                engine=$(_session_engine "$CS_SESSION_DIR" "") || engine=""
+            fi
+            ;;
+    esac
     case "$sub" in
         add)   shift; _queue_add "$qdir" "$*";;
         accept) shift; _queue_accept "$qdir" "${1:-}";;
@@ -14058,7 +14081,12 @@ run_queue() {
         list|ls) _queue_list "$qdir" | _scrub_controls;;
         rm)    shift; _queue_rm "$qdir" "${1:-}";;
         clear)
-            _queue_clear "$qdir"
+            if [ "$engine" = antigravity ]; then
+                cs_run_guarded "$meta" _antigravity_queue_clear "$qdir" ||
+                    error "Could not clear the Antigravity queue."
+            else
+                _queue_clear "$qdir"
+            fi
             # A Codex run's drain record lives in its private cache.
             if declare -F _codex_queue_forget_session_run >/dev/null; then
                 _codex_queue_forget_session_run "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
@@ -14066,9 +14094,10 @@ run_queue() {
             ;;
         start)
             shift
-            local engine=""
-            if [ -n "${CS_SESSION_DIR:-}" ]; then
-                engine=$(_session_engine "$CS_SESSION_DIR" "${CS_RUN_ENGINE:-}") || engine=""
+            if [ "$engine" = antigravity ]; then
+                cs_run_guarded "$meta" _antigravity_queue_start "$qdir" "${1:-}" ||
+                    error "Could not start the Antigravity queue."
+                return 0
             fi
             if [ "${1:-}" = workflow ] && [ "$engine" = codex ]; then
                 error "Codex queues run in the conversation or in subagents. Use cs -queue start or cs -queue start subagents."
@@ -24122,6 +24151,286 @@ _switch_resume_handoff() {  # session_dir, consumer_id, variable
     [ -z "$refusal" ] || _handoff_refusal_notice ".cs/${handoffs#"$dir/.cs/"}/$handoff" "$refusal" "$marker"
     printf -v "$3" '%s' "$prompt"
 }
+CS_ANTIGRAVITY_QUEUE_MIN_VERSION=1.5.13
+CS_ANTIGRAVITY_QUEUE_TASKS_PER_ARM=8
+CS_ANTIGRAVITY_QUEUE_STOP_BUDGET=8
+
+_antigravity_queue_version_ok() {  # agy binary
+    local version
+    version=$(_antigravity_version "$1") &&
+        _version_at_least "$version" "$CS_ANTIGRAVITY_QUEUE_MIN_VERSION"
+}
+
+_antigravity_queue_cache() {  # session, [create]
+    local dir parent
+    dir=$(cs_retire_cache_dir antigravity-queues "$1") || return 1
+    case "$dir" in /*) ;; *) return 1 ;; esac
+    parent=${dir%/*}
+    while [ ! -d "$parent" ]; do parent=${parent%/*}; [ -n "$parent" ] || parent=/; done
+    ! _codex_run_dir_in_sandbox_root "$parent" "$1" || return 1
+    [ -z "${2:-}" ] || cs_cache_dir_make_private "$dir" || return 1
+    _launch_handoff_receipt_dir_ok "$dir" "$1" || return 1
+    printf '%s\n' "$dir"
+}
+
+_antigravity_queue_record() {  # protected cache, drain JSON
+    _antigravity_mail_state_write "$1/drain.json" "$2"$'\n'
+}
+
+_antigravity_queue_read() {  # protected cache
+    local file="$1/drain.json"
+    [ -f "$file" ] && [ ! -L "$file" ] || return 1
+    jq -ce 'select(type == "object" and (.count | type) == "number")' "$file"
+}
+
+_antigravity_queue_arm() {  # session
+    local dir
+    dir=$(_antigravity_queue_cache "$1" create) || return 1
+    _antigravity_queue_record "$dir" '{"count":0}'
+}
+
+_antigravity_queue_clear() {  # queue dir
+    local dir=""
+    if [ -z "${CS_RUN_ENGINE:-}" ]; then
+        dir=$(_antigravity_queue_cache "$CS_SESSION_DIR") || dir=""
+        [ -z "$dir" ] || _antigravity_queue_record "$dir" '{"count":0,"park":"cleared"}' || return 1
+    fi
+    _queue_clear "$1"
+}
+
+_antigravity_queue_start() {  # queue dir, mode
+    [ -z "$2" ] || error "Antigravity queues run in the main conversation. Use cs -queue start without a mode."
+    [ -z "${CS_RUN_ENGINE:-}" ] || error "Start an Antigravity queue with cs <session> -queue start in your own shell."
+    ! _switch_session_encrypted "$CS_SESSION_DIR" ||
+        error "Encrypted Antigravity sessions cannot host a walk-away queue. The queued tasks stay available."
+    _antigravity_queue_version_ok "${AGY_BIN:-agy}" ||
+        error "Antigravity walk-away queues need agy $CS_ANTIGRAVITY_QUEUE_MIN_VERSION or later."
+    _queue_start "$1" "" antigravity
+    _antigravity_queue_arm "$CS_SESSION_DIR" ||
+        error "Could not arm a protected Antigravity queue record. Check CS_CACHE_DIR and retry."
+    local id run_dir
+    id=$(jq -r 'select(.engine == "antigravity") | .run_id' "$CS_SESSION_DIR/.cs/local/run-lease.json" 2>/dev/null) || id=""
+    if _is_uuid "$id"; then
+        run_dir=$(CS_RUN_ID="$id" _antigravity_run_dir) || return 0
+        if [ ! -f "$run_dir/queue-home" ]; then
+            warn "Queue armed. Reopen the Antigravity session to start its queue-enabled sandbox."
+        fi
+    fi
+    return 0
+}
+
+# The queue runner uses this launch's sandbox and the native history under
+# the launch home. Ordinary launches need no queue configuration.
+_antigravity_queue_prepare() {  # run dir, session, agy binary
+    local home helper
+    [ -n "$1" ] && _launch_handoff_receipt_dir_ok "$1" "$2" || return 1
+    _antigravity_queue_version_ok "$3" && _antigravity_flags_listed "$3" --sandbox || return 1
+    _antigravity_autoclear_hooks_ready "$CS_BIN" || return 1
+    helper=$(_codex_thread_helper) && [ -x "$helper" ] || return 1
+    home=$(cd -P -- "$HOME" && pwd -P) || return 1
+    ! _codex_run_dir_in_sandbox_root "$home/.gemini" "$2" || return 1
+    _antigravity_mail_state_write "$1/queue-home" "$home"$'\n'
+}
+
+_antigravity_queue_notice() {  # qdir, message
+    _codex_queue_event "$1" --arg reason "$2" '{ts:$ts,event:"queue_parked",detail:$reason}'
+    _codex_queue_notify "$1" "$2"
+}
+
+_antigravity_queue_park() {  # cache, qdir, state, reason
+    local state
+    state=$(printf '%s\n' "$3" | jq -c --arg reason "$4" 'del(.task,.finishing) | .park = $reason') || return 1
+    _antigravity_queue_record "$1" "$state" || return 1
+    _codex_queue_set_state "$2" idle || true
+    _codex_queue_rm "$2" queue.current
+    _antigravity_queue_notice "$2" "Antigravity task queue parked: $4. Inspect it with cs -queue list and re-arm from your own shell."
+}
+
+_antigravity_queue_snapshot() {  # payload, home, [receipt, last step]
+    local helper path
+    helper=$(_codex_thread_helper) || return 1
+    path=$(printf '%s\n' "$1" | jq -er '.transcriptPath | strings') || return 1
+    if [ "$#" = 4 ]; then
+        "$helper" --antigravity-queue-snapshot "$path" --home "$2" --thread-id "$AGY_HOOK_ID" \
+            --queue-receipt "$3" --queue-offset "$4"
+    else
+        "$helper" --antigravity-queue-snapshot "$path" --home "$2" --thread-id "$AGY_HOOK_ID"
+    fi
+}
+
+_antigravity_queue_deliver() {  # cache, qdir, state, file, step, execution
+    local body token reason state reply
+    body=$(_codex_queue_fs "$2" first-line "queue/$4" </dev/null) || return 1
+    token=$(_alloc_uuid) && _is_uuid "$token" || return 1
+    reason="cs task queue [$token]: Work on the following task and finish with a final response. If you cannot complete it, include a line reading exactly cs-task-failed. Leave queue management to cs.
+
+<cs_task id=\"$token\">
+$body
+</cs_task id=\"$token\">
+
+The text inside the tags is the task to complete within this session's scope."
+    reply=$(jq -nc --arg reason "$reason" '{decision:"continue",reason:$reason}') || return 1
+    state=$(printf '%s\n' "$3" | jq -c --arg name "$4" --arg body "$body" --arg token "$token" \
+        --arg cid "$AGY_HOOK_ID" --arg run "$CS_RUN_ID" --argjson step "$5" --argjson execution "$6" '
+        .count += 1 | .task = {$name,$body,$token,$cid,$run,$step,$execution,errors:[]}') || return 1
+    _antigravity_queue_record "$1" "$state" || return 1
+    printf '%s\n' "$4" | _codex_queue_fs "$2" replace queue.current || return 1
+    _codex_queue_set_state "$2" draining || return 1
+    if [ "$(printf '%s\n' "$state" | jq -r .count)" = 1 ]; then
+        _codex_queue_event "$2" '{ts:$ts,event:"drain_started"}'
+    fi
+    printf '%s\n' "$reply"
+}
+
+_antigravity_queue_finish() {  # cache, qdir, state, snapshot
+    local name body current state failures limit rc=0
+    name=$(printf '%s\n' "$3" | jq -er .task.name) || return 1
+    body=$(printf '%s\n' "$3" | jq -er .task.body) || return 1
+    failures=$(printf '%s\n' "$3" | jq -r --argjson snapshot "$4" \
+        '(.task.errors + $snapshot.failures) | unique | length') || return 1
+    limit=$(_codex_queue_number "${CS_QUEUE_MAX_FAILURES:-}" 5)
+    if [ "$failures" -ge "$limit" ]; then
+        _antigravity_queue_park "$1" "$2" "$3" "$failures tool failures (limit $limit)"
+        return 1
+    fi
+    if printf '%s\n' "$4" | jq -e .task_failed >/dev/null; then
+        _antigravity_queue_park "$1" "$2" "$3" "the task reported failure"
+        return 1
+    fi
+    current=$(_codex_queue_fs "$2" first-line "queue/$name" </dev/null) || rc=$?
+    if [ "$rc" = 0 ] && [ "$current" = "$body" ]; then
+        # An interrupted pop needs inspection. Never append the same receipt
+        # again after a crash between the append and unlink.
+        state=$(printf '%s\n' "$3" | jq -c '.finishing = true') || return 1
+        _antigravity_queue_record "$1" "$state" || return 1
+        if ! _codex_queue_finish_task "$2" "$name"; then
+            _antigravity_queue_park "$1" "$2" "$state" "could not record the completed task"
+            return 1
+        fi
+    elif [ "$rc" != 3 ]; then
+        _antigravity_queue_park "$1" "$2" "$3" "the active task changed while it ran"
+        return 1
+    fi
+    state=$(printf '%s\n' "$3" | jq -c 'del(.task,.finishing)') || return 1
+    _antigravity_queue_record "$1" "$state" || return 1
+    _codex_queue_rm "$2" queue.current
+    printf '%s\n' "$state"
+}
+
+_antigravity_queue_owned() {  # event payload, run dir, execution
+    local cache qdir state home snapshot baseline token remaining file count phase
+    [ "$(cs_binding_read "$CS_SESSION_DIR" antigravity)" = "$AGY_HOOK_ID" ] || return 1
+    [ -f "$2/held-$AGY_HOOK_ID" ] && [ ! -L "$2/held-$AGY_HOOK_ID" ] || return 1
+    qdir=$(_codex_queue_dir "$CS_SESSION_DIR/.cs") || return 1
+    [ "$qdir" = "$CS_SESSION_DIR/.cs/local" ] || return 1
+    phase=$(_codex_queue_state "$qdir") || return 1
+    cache=$(_antigravity_queue_cache "$CS_SESSION_DIR") || return 1
+    state=$(_antigravity_queue_read "$cache") || return 1
+    if printf '%s\n' "$state" | jq -e '.park != null' >/dev/null; then
+        _codex_queue_set_state "$qdir" idle || true
+        return 1
+    fi
+    IFS= read -r home < "$2/queue-home" || return 1
+    if printf '%s\n' "$state" | jq -e '.task != null' >/dev/null; then
+        if ! printf '%s\n' "$state" | jq -e --arg run "$CS_RUN_ID" --arg cid "$AGY_HOOK_ID" \
+            '.task.run == $run and .task.cid == $cid and .finishing != true' >/dev/null; then
+            _antigravity_queue_park "$cache" "$qdir" "$state" "the previous task was interrupted"
+            return 1
+        fi
+        token=$(printf '%s\n' "$state" | jq -er .task.token) || return 1
+        baseline=$(printf '%s\n' "$state" | jq -er .task.step) || return 1
+        snapshot=$(_antigravity_queue_snapshot "$1" "$home" "$token" "$baseline") || snapshot=null
+        if ! printf '%s\n' "$snapshot" | jq -e '.delivered and .final' >/dev/null; then
+            if [ "$(printf '%s\n' "$snapshot" | jq -r .last_step)" = "$baseline" ] &&
+                [ "$(printf '%s\n' "$state" | jq -r .task.execution)" = "$3" ]; then
+                return 1
+            fi
+            _antigravity_queue_park "$cache" "$qdir" "$state" "could not confirm the task's delivery and final response"
+            return 1
+        fi
+        state=$(_antigravity_queue_finish "$cache" "$qdir" "$state" "$snapshot") || return 1
+    elif [ "$phase" = draining ]; then
+        _antigravity_queue_park "$cache" "$qdir" "$state" "there is no recorded task for this drain"
+        return 1
+    fi
+
+    remaining=""
+    for file in "$qdir/queue/"*; do
+        [ -f "$file" ] && [ ! -L "$file" ] || continue
+        remaining=${file##*/}
+        break
+    done
+    count=$(printf '%s\n' "$state" | jq -er .count) || return 1
+    if [ -z "$remaining" ]; then
+        _antigravity_queue_record "$cache" "$(jq -nc --argjson count "$count" '{$count,park:"drained"}')" || return 1
+        _codex_queue_set_state "$qdir" idle || true
+        if [ "$count" -gt 0 ]; then
+            _codex_queue_event "$qdir" --argjson completed "$count" '{ts:$ts,event:"drain_finished",done:$completed}'
+            _codex_queue_notify "$qdir" "Antigravity queue drained: $count task(s) done."
+            _codex_queue_rm "$qdir" spawned-by
+        fi
+        return 1
+    fi
+    if [ "$count" -ge "$CS_ANTIGRAVITY_QUEUE_TASKS_PER_ARM" ] || [ "$3" -ge "$CS_ANTIGRAVITY_QUEUE_STOP_BUDGET" ]; then
+        _antigravity_queue_park "$cache" "$qdir" "$state" "continuation budget reached"
+        return 1
+    fi
+    if [ "$(_antigravity_autoclear_action "$CS_SESSION_DIR")" != clear ] ||
+        [ -n "$(_rotation_peek_armed_handoff "$CS_SESSION_DIR/.cs/handoffs" "$qdir/pending-handoff")" ]; then
+        _codex_queue_set_state "$qdir" armed || true
+        return 1
+    fi
+    snapshot=$(_antigravity_queue_snapshot "$1" "$home") || snapshot=null
+    baseline=$(printf '%s\n' "$snapshot" | jq -er 'select(.last_type == "PLANNER_RESPONSE" and .last_step >= 0) | .last_step') || {
+        _antigravity_queue_park "$cache" "$qdir" "$state" "native transcript is unavailable at Stop"
+        return 1
+    }
+    if ! _antigravity_queue_deliver "$cache" "$qdir" "$state" "$remaining" "$baseline" "$3"; then
+        _antigravity_queue_park "$cache" "$qdir" "$state" "could not record task delivery"
+        return 1
+    fi
+}
+
+_antigravity_queue_run() {  # verified native hook
+    local dir
+    [ "$AGY_HOOK_TYPED" = 1 ] || return 1
+    [ -z "${CS_ANTIGRAVITY_VAULT_RUN:-}" ] || return 1
+    dir=$(_antigravity_run_dir) && _antigravity_hook_from_native "$dir" || return 1
+    [ -f "$dir/queue-home" ] && [ ! -L "$dir/queue-home" ] || return 1
+    _launch_handoff_receipt_dir_ok "$dir" "$CS_SESSION_DIR" || return 1
+    [ ! -e "$dir/vault" ] && ! _switch_session_encrypted "$CS_SESSION_DIR" || return 1
+    ! _antigravity_explicit_resume_pending "$dir" || return 1
+    ! cs_files_tracked_notice "$CS_SESSION_DIR/.cs" "$CS_SESSION_DIR" >/dev/null || return 1
+    printf '%s\n' "$dir"
+}
+
+_antigravity_queue_stop() {  # payload
+    local run execution
+    [ "$AGY_HOOK_IDLE" = 1 ] && [ "$AGY_HOOK_TERMINATION" = NO_TOOL_CALL ] || return 1
+    [ -f "$CS_SESSION_DIR/.cs/local/queue.state" ] || return 1
+    run=$(_antigravity_queue_run) || return 1
+    execution=$(printf '%s\n' "$1" | jq -er '.executionNum | numbers | select(. == floor and . >= 0 and . <= 100)') || return 1
+    cs_run_with_lease "$CS_SESSION_DIR/.cs" _antigravity_queue_owned "$1" "$run" "$execution"
+}
+
+_antigravity_queue_record_error() {  # step
+    local cache state
+    [ "$(cs_binding_read "$CS_SESSION_DIR" antigravity)" = "$AGY_HOOK_ID" ] || return 0
+    cache=$(_antigravity_queue_cache "$CS_SESSION_DIR") || return 0
+    state=$(_antigravity_queue_read "$cache") || return 0
+    state=$(printf '%s\n' "$state" | jq -ce --arg cid "$AGY_HOOK_ID" --arg run "$CS_RUN_ID" --argjson step "$1" '
+        select(.task.cid == $cid and .task.run == $run and $step > .task.step)
+        | .task.errors += [$step] | .task.errors |= unique') || return 0
+    _antigravity_queue_record "$cache" "$state"
+}
+
+_antigravity_queue_tool_failure() {  # payload
+    local step
+    [ -f "$CS_SESSION_DIR/.cs/local/queue.current" ] || return 0
+    step=$(printf '%s\n' "$1" | jq -er 'select(.error | strings | length > 0) | .stepIdx | numbers | select(. == floor and . >= 0)') || return 0
+    _antigravity_queue_run >/dev/null || return 0
+    cs_run_with_lease "$CS_SESSION_DIR/.cs" _antigravity_queue_record_error "$step"
+}
 # agy keeps its conversations, brain, summaries, history, logs and caches in
 # $HOME/.gemini/antigravity-cli and has no setting that moves them: it
 # resolves everything from $HOME (measured on agy 1.5.9 and 1.5.10). An
@@ -24689,12 +24998,12 @@ _cs_antigravity_adapter_capabilities() {
     # rotation: exit and reopen with --from-handoff (or answer r). The launch
     # supplies an interactive prompt; PreInvocation binds and consumes it.
     # spawn_brief: the launch writes a seed's brief in and sends its kickoff
-    # as the first prompt, once; agy hosts no walk-away task queue.
+    # as the first prompt, once. A sandboxed agy can run queued tasks.
     # feature_finish: -finish sends a first prompt naming the finish skill's
     # SKILL.md, since agy hands a typed /cs:finish no folder.
     # mail_delivery: PreInvocation shows unread mail at each prompt, and Stop
     # wakes a turn that ends with mail which came while it ran.
-    printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch spawn_brief feature_finish mail_delivery
+    printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch spawn_brief feature_finish mail_delivery task_queue
     # clear_rotation: /clear (or /new) carries an armed rotation into the new
     # conversation, which takes the binding. Claimed only inside a run whose
     # launch found it usable (_antigravity_clear_rebind_on), so the rotate
@@ -24717,6 +25026,7 @@ _cs_antigravity_adapter_capabilities() {
 # where each turn is a process of its own and the reset proves nothing.
 # shellcheck disable=SC2034  # read by cs -doctor in lib/60-doctor.sh
 CS_ANTIGRAVITY_MAIL_MIN_VERSION=1.5.9
+CS_ANTIGRAVITY_STOP_MAX_CONTINUATIONS=10
 
 # The oldest agy on which a conversation /clear or /new started was measured
 # apart from a subagent's, which the /clear rebind stands on: 1.5.10, on
@@ -25316,13 +25626,29 @@ $prompt"
     # work, which cs cannot tell (rotation treats a missing consumer the same
     # way), and the brief stays for the agent to read. agy takes one first
     # prompt, so a rotation handoff this open carries keeps the seed staged
-    # for a later open, as does an agy that cannot take the prompt. A seed
-    # with tasks waits for a Claude open, unoffered, since taking it here
-    # could only fail.
+    # for a later open, as does an agy that cannot take the prompt or run
+    # the seed's tasks.
     local spawn_kick="" spawn_wait=""
+    local seed_tasks="" queue_home="" queue_record=""
+    local -a queue_args=()
+    if [ -n "${SESSIONS_ROOT:-}" ] && [ -f "$SESSIONS_ROOT/.spawn/$session_name.seed" ] &&
+        _spawn_seed_has_tasks "$SESSIONS_ROOT/.spawn/$session_name.seed"; then
+        seed_tasks=1
+    fi
+    if [ -z "$vault_home" ]; then
+        if _codex_queue_state "$session_dir/.cs/local" >/dev/null; then
+            queue_record=$(_antigravity_queue_cache "$session_dir") && queue_record=$(_antigravity_queue_read "$queue_record") || queue_record=""
+        fi
+        if [ -n "$seed_tasks" ] || { [ -n "$queue_record" ] && printf '%s\n' "$queue_record" | jq -e '.park == null' >/dev/null; }; then
+            if _antigravity_queue_prepare "$run_dir" "$session_dir" "$agy_bin"; then
+                queue_home=1
+                queue_args=(--sandbox)
+            fi
+        fi
+    fi
     if [ -n "${SESSIONS_ROOT:-}" ] && [ -f "$SESSIONS_ROOT/.spawn/$session_name.seed" ]; then
-        if _spawn_seed_has_tasks "$SESSIONS_ROOT/.spawn/$session_name.seed"; then
-            spawn_wait="it carries tasks and only Claude runs the walk-away queue (take it with: cs $session_name --engine claude)"
+        if [ -n "$seed_tasks" ] && [ -z "$queue_home" ]; then
+            spawn_wait="its tasks need an unencrypted Antigravity run with supported agy, the current cs hooks, and a protected cache (take it under Claude with: cs $session_name --engine claude)"
         elif [ -n "$rotation_handoff" ]; then
             spawn_wait="this open carries the rotation handoff"
         elif [ -n "$merge_kick" ]; then
@@ -25335,6 +25661,9 @@ $prompt"
         fi
         [ -z "$spawn_wait" ] \
             || warn "A spawn seed is staged for $session_name; it stays staged for a later open, since $spawn_wait."
+    fi
+    if [ -n "$queue_record" ] && [ -z "$queue_home" ] && printf '%s\n' "$queue_record" | jq -e '.park == null' >/dev/null; then
+        warn "The Antigravity queue stays armed. This run lacks the current cs hooks, supported agy, or protected storage it needs to drain."
     fi
     # The automatic /clear after a rotation: a watcher beside agy types
     # /clear and go once a turn ends with a handoff armed
@@ -25365,11 +25694,11 @@ $prompt"
     # _antigravity_run_mark swallows a failed write, and a run whose mark is
     # missing keeps the binding and the mail with its first conversation.
     if [ -n "$autoclear" ]; then
-        printf '%s\n' "Antigravity via cs: session context is on ($rule_shown), $reopens. Rotate with /cs:rotate, and cs types /clear and go for you $grace s after that turn ends. The task queue is not available under Antigravity yet. A conversation started with /clear or /new takes over the session and its cs mail."
+        printf '%s\n' "Antigravity via cs: session context is on ($rule_shown), $reopens. Rotate with /cs:rotate, and cs types /clear and go for you $grace s after that turn ends. A conversation started with /clear or /new takes over the session and its cs mail."
     elif [ -n "$run_dir" ] && [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ]; then
-        printf '%s\n' "Antigravity via cs: session context is on ($rule_shown), $reopens. Rotate with /cs:rotate, then /clear and send go. The task queue is not available under Antigravity yet. A conversation started with /clear or /new takes over the session and its cs mail."
+        printf '%s\n' "Antigravity via cs: session context is on ($rule_shown), $reopens. Rotate with /cs:rotate, then /clear and send go. A conversation started with /clear or /new takes over the session and its cs mail."
     else
-        printf '%s\n' "Antigravity via cs: session context is on ($rule_shown), $reopens. Rotate with /cs:rotate, then /exit and cs $session_name --from-handoff. The task queue is not available under Antigravity yet. A conversation started with /clear or /new gets no cs mail until you reopen the session."
+        printf '%s\n' "Antigravity via cs: session context is on ($rule_shown), $reopens. Rotate with /cs:rotate, then /exit and cs $session_name --from-handoff. A conversation started with /clear or /new gets no cs mail until you reopen the session."
     fi
     if [ -n "$rotation_handoff" ]; then
         cs_run_with_lease "$meta_dir" _launch_handoff_prepare "$session_dir" antigravity "$rotation_handoff" || {
@@ -25384,7 +25713,7 @@ $prompt"
     local -a home_args=()
     [ -z "$vault_home" ] || home_args=(env HOME="$vault_home" CS_ANTIGRAVITY_SHARED_HOME="$shared_home" CS_ANTIGRAVITY_VAULT_RUN="$CS_RUN_ID")
     cs_run_child ${home_args[@]+"${home_args[@]}"} "$agy_bin" ${reopen_args[@]+"${reopen_args[@]}"} ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} \
-        ${statusline_args[@]+"${statusline_args[@]}"} ${prompt_args[@]+"${prompt_args[@]}"} || status=$?
+        ${statusline_args[@]+"${statusline_args[@]}"} ${queue_args[@]+"${queue_args[@]}"} ${prompt_args[@]+"${prompt_args[@]}"} || status=$?
     # The watcher goes as soon as agy does, before anything else the run does
     # (a switch's relaunch would otherwise get its keys). Keys it typed just
     # before agy exited can wait unread in the terminal and would run in the
@@ -25855,6 +26184,9 @@ _antigravity_hook_post_tool_use() {  # payload
     if [ -n "${_cs_private_pin_dir:-}" ] && run_dir=$(_antigravity_run_dir); then
         _antigravity_hook_vault_check "$run_dir" || return 0
     fi
+    if [ -f "$CS_SESSION_DIR/.cs/local/queue.current" ] && _antigravity_payload_read "$1"; then
+        _antigravity_queue_tool_failure "$1" || true
+    fi
     event=$(printf '%s' "$1" | cs_engine_call antigravity files_changed) || return 0
     [ -n "$event" ] || return 0
     script="$(_antigravity_plugin_dir)/scripts/autosave-commits.sh"
@@ -25980,18 +26312,27 @@ _antigravity_hook_mail_digest() {  # conversation_id
 # automatic /clear's count (_antigravity_autoclear_arm).
 _antigravity_hook_stop() {  # payload
     _antigravity_payload_read "$1" || return 0
-    _antigravity_hook_mail_wake
+    local queue_reply
+    if queue_reply=$(_antigravity_queue_stop "$1") && [ -n "$queue_reply" ]; then
+        ANTIGRAVITY_HOOK_REPLY=$queue_reply
+        return 0
+    fi
+    _antigravity_hook_mail_wake "$1"
     [ -n "$ANTIGRAVITY_HOOK_REPLY" ] || _antigravity_autoclear_arm
 }
 
 # The mail wake for the Stop _antigravity_hook_stop has read: its answer goes
 # to ANTIGRAVITY_HOOK_REPLY, or none.
-_antigravity_hook_mail_wake() {
+_antigravity_hook_mail_wake() {  # payload
     local mail state answer nl='
 '
     # shellcheck disable=SC2034  # set and read by cs_mail_wake_* (lib/02-shared.sh)
     local MAIL_UNREAD=0 MAIL_FRESH=0 MAIL_NAMES="" MAIL_FROM="" MAIL_WAKES=0
     [ "$AGY_HOOK_TERMINATION" = NO_TOOL_CALL ] || return 0
+    # A Stop at execution 10 ignores further continuations, so do not
+    # record mail as announced there. Missing counters retain old behavior.
+    ! printf '%s\n' "${1:-}" | jq -e --argjson max "$CS_ANTIGRAVITY_STOP_MAX_CONTINUATIONS" \
+        '.executionNum | numbers | . >= $max' >/dev/null 2>&1 || return 0
     mail=$(_antigravity_mail_dir "$AGY_HOOK_ID") || return 0
     [ -d "$mail/new" ] || return 0
     state=$(_antigravity_mail_state_dir make) || return 0

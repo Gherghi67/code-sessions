@@ -322,6 +322,7 @@ _queue_log() {  # qdir
         $inbox | split("\n")[] | fromjson? // empty |
         (.ts | strflocaltime("%Y-%m-%d %H:%M")) + "  " + .event +
         (if .task then ": " + .task
+         elif .detail then ": " + .detail
          elif .reason then ": " + .reason + " (" + (.reading|tostring) + " >= " + (.limit|tostring) + "), " + (.remaining|tostring) + " remaining"
          elif .done then ": " + (.done|tostring) + " done"
          else "" end)
@@ -344,6 +345,14 @@ run_queue() {
         || error "this session keeps its queue in encrypted storage that is not mounted (.cs/private $(cs_private_state "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}")). Mount it, then retry."
     _queue_convert_legacy "$qdir"
     local sub="${1:-list}"
+    local engine="${CS_RUN_ENGINE:-}" meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    case "$sub" in
+        start|clear)
+            if [ -z "$engine" ] && [ -n "${CS_SESSION_DIR:-}" ]; then
+                engine=$(_session_engine "$CS_SESSION_DIR" "") || engine=""
+            fi
+            ;;
+    esac
     case "$sub" in
         add)   shift; _queue_add "$qdir" "$*";;
         accept) shift; _queue_accept "$qdir" "${1:-}";;
@@ -355,7 +364,12 @@ run_queue() {
         list|ls) _queue_list "$qdir" | _scrub_controls;;
         rm)    shift; _queue_rm "$qdir" "${1:-}";;
         clear)
-            _queue_clear "$qdir"
+            if [ "$engine" = antigravity ]; then
+                cs_run_guarded "$meta" _antigravity_queue_clear "$qdir" ||
+                    error "Could not clear the Antigravity queue."
+            else
+                _queue_clear "$qdir"
+            fi
             # A Codex run's drain record lives in its private cache.
             if declare -F _codex_queue_forget_session_run >/dev/null; then
                 _codex_queue_forget_session_run "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
@@ -363,9 +377,10 @@ run_queue() {
             ;;
         start)
             shift
-            local engine=""
-            if [ -n "${CS_SESSION_DIR:-}" ]; then
-                engine=$(_session_engine "$CS_SESSION_DIR" "${CS_RUN_ENGINE:-}") || engine=""
+            if [ "$engine" = antigravity ]; then
+                cs_run_guarded "$meta" _antigravity_queue_start "$qdir" "${1:-}" ||
+                    error "Could not start the Antigravity queue."
+                return 0
             fi
             if [ "${1:-}" = workflow ] && [ "$engine" = codex ]; then
                 error "Codex queues run in the conversation or in subagents. Use cs -queue start or cs -queue start subagents."

@@ -37,7 +37,7 @@ describe the checked-in integration: Claude supports `launch`, `exact_resume`,
 `startup_context`, `feature_finish`, `rotation`, `engine_switch`, `spawn_brief`, `memory_index`,
 `mail_delivery`, `recovery_autosave`, `clear_rotation`, and `task_queue`; Antigravity supports `launch`,
 `exact_resume`, `startup_context`, `recovery_autosave`, `memory_index`, `rotation`, `engine_switch`,
-`spawn_brief`, `feature_finish`, and `mail_delivery`, and `clear_rotation` inside a run whose launch found
+`spawn_brief`, `feature_finish`, `mail_delivery` and `task_queue`, with `clear_rotation` inside a run whose launch found
 `agy` 1.5.10 or later and cs's SessionStart hook, and `auto_clear` inside one whose watcher types that
 `/clear` for you ([Antigravity sessions](antigravity.md)). These
 names describe the integration's behavior, not a guarantee about every

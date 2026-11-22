@@ -293,10 +293,9 @@ higher than the running model has used, never lower. A family with no bucket
 for a window leaves that window out, buckets for any other window (a daily
 one, say) are not drawn, and no quota shows until `agy` names the model.
 
-Claude's logo and attention shade are omitted under Antigravity. Mail and
-queue counts describe stored cs state: unread messages and pending queue
-items. They do not mean agy delivers those messages or runs that queue;
-read mail with `cs -msg` and manage the queue with `cs -queue`.
+Claude's logo and attention shade are omitted under Antigravity.
+Mail and queue counts show unread messages and pending queue items.
+Read mail with `cs -msg` and manage tasks with `cs -queue`.
 
 | `agy` payload field (1.5.9) | What cs's line does with it |
 | --- | --- |
@@ -791,7 +790,7 @@ the folder was not loaded in that run, while `~/.gemini/GEMINI.md` was.
 
 `cs -engine` under Antigravity reports `launch`, `exact_resume`,
 `startup_context`, `recovery_autosave`, `memory_index`, `rotation`, `engine_switch`,
-`spawn_brief`, `feature_finish`, and `mail_delivery`, plus `clear_rotation`
+`spawn_brief`, `feature_finish`, `mail_delivery` and `task_queue`, plus `clear_rotation`
 inside a run whose launch found rotation through `/clear` usable
 ([Rotation through /clear](#rotation-through-clear)), and `auto_clear` inside
 one whose watcher types the `/clear` for you ([Automatic /clear](#automatic-clear)).
@@ -801,7 +800,6 @@ Skills that check before relying on a capability refuse cleanly
 
 | Not available under Antigravity yet | What cs does instead |
 | --- | --- |
-| The walk-away task queue (`cs -spawn --task`) | Antigravity takes briefs. For tasks, use Claude or Codex. A seed with tasks stays staged at an Antigravity open, which can continue and tells you how to open the seed under Claude. |
 | A wake for mail that comes while the conversation sits idle at its prompt | `agy` has no event for that moment, so the mail shows at the next prompt ([Mail](#mail)). |
 | Mail and the binding in a conversation the run never bound, opened with `/resume` or `/fork` after the first turn | The bound conversation keeps the digest and wake. Reopen and pick the conversation with `/resume` before the first turn ([Mail](#mail), [Forks](#forks)). `/clear` and `/new` move the session, and a conversation that held it earlier in the run takes it back when you return to it with `/resume` ([Rotation through /clear](#rotation-through-clear)). |
 | Crash-recovery prompt | Edits are snapshotted ([Recovery copies](#recovery-copies)), but nothing offers them back; restore by hand. |
@@ -809,6 +807,33 @@ Skills that check before relying on a capability refuse cleanly
 
 A feature worktree (`cs <base>@<feature> --engine antigravity`) launches like
 any other session, with its own rule and the shared exclude entry.
+
+## Walk-away task queue
+
+Run `cs -spawn worker --engine antigravity --task "first" --task "second"`
+to launch a worker and start its queue. To run tasks in an existing session,
+add them with `cs <session> -queue add "task"`, then run
+`cs <session> -queue start` from your shell. If the running session was opened
+without a queue, reopen it to pick up the queue's sandbox. Send a prompt
+when the session is waiting at its input field.
+
+The queue requires agy 1.5.13 or later, the current cs hooks, and unencrypted
+storage. cs passes `agy --sandbox` for a run that can drain the queue. The
+main conversation works on one task at a time and agy's approvals still
+apply. Use plain `cs -queue start` for Antigravity.
+
+cs checks the native transcript for the task and its final reply before
+marking it done. A reported failure, too many tool failures, or an
+unconfirmed reply parks the queue with the current task still present.
+After eight deliveries per arm, or when earlier continuations leave too
+little room in the turn, the remainder stays queued. Context and quota
+remain available on the status line when configured. The queue uses its
+fixed task cap to bound the run.
+
+Use `cs <session> -queue list` and `cs <session> -queue log` to see what
+completed or parked. A spawned worker sends its spawner a notice when
+it finishes the queue or parks. Re-arm from your own shell with
+`cs <session> -queue start`.
 
 ## Spawn briefs
 

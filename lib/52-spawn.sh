@@ -491,6 +491,12 @@ _spawn_prepare_launch() {  # session_name, session_dir
             local _has_brief=0 _qdir
             if [ "$_n" -gt 0 ]; then
                 _spawn_refuse_queue "${CS_RUN_ENGINE:-claude}" " (seed kept)" "$session_dir"
+                if [ "${CS_RUN_ENGINE:-claude}" = antigravity ]; then
+                    local _agy_run_dir
+                    _agy_run_dir=$(_antigravity_run_dir) && [ -f "$_agy_run_dir/queue-home" ] &&
+                        [ ! -L "$_agy_run_dir/queue-home" ] ||
+                        error "This Antigravity run cannot drain the task queue (seed kept)."
+                fi
             fi
             if [ "${CS_RUN_ENGINE:-claude}" = codex ] && [ -e "$session_dir/.cs/local/spawn-kick.json" ]; then
                 error "An earlier spawn kickoff is pending; deliver it before taking another seed (seed kept)"
@@ -585,6 +591,10 @@ _spawn_prepare_launch() {  # session_name, session_dir
             if [ "$_n" -gt 0 ]; then
                 _queue_set_state "$_qdir" armed \
                     || error "the seed's $_n task(s) are queued but the queue could not be armed; arm it with: cs $session_name -queue start"
+                if [ "${CS_RUN_ENGINE:-claude}" = antigravity ]; then
+                    _antigravity_queue_arm "$session_dir" ||
+                        error "The seed's $_n task(s) are queued, but the protected Antigravity queue could not be armed. Run: cs $session_name -queue start"
+                fi
             fi
 
         fi
@@ -603,6 +613,13 @@ _spawn_take_back_tasks() {  # staged paths; _left belongs to the seed consumer
 _spawn_refuse_queue() {  # engine, suffix, session_dir (when it exists)
     local status=0
     if cs_engine_supports "$1" task_queue; then
+        if [ "$1" = antigravity ]; then
+            if [ -n "${3:-}" ] && _switch_session_encrypted "$3"; then
+                error "Encrypted Antigravity sessions cannot host a walk-away queue. Use --brief without --task$2"
+            fi
+            _antigravity_queue_version_ok "${AGY_BIN:-agy}" ||
+                error "Antigravity walk-away queues need agy $CS_ANTIGRAVITY_QUEUE_MIN_VERSION or later. Upgrade agy or use --brief without --task$2"
+        fi
         if [ "$1" = codex ] && [ -n "${3:-}" ] && is_session_dir "$3" && _switch_session_encrypted "$3"; then
             error "An encrypted session cannot host a Codex walk-away queue: on macOS the agent can move its Codex home out from under cs's read-only rule and rewrite the history cs confirms tasks by. Use --brief without --task$2"
         fi
@@ -614,10 +631,7 @@ _spawn_refuse_queue() {  # engine, suffix, session_dir (when it exists)
         esac
         return 0
     fi
-    case "$1" in
-        antigravity) error "Antigravity does not host the walk-away task queue; use --brief without --task$2" ;;
-        *) error "$1 does not host the walk-away task queue; use --brief without --task$2" ;;
-    esac
+    error "$1 does not host the walk-away task queue; use --brief without --task$2"
 }
 
 # Only an owned, fresh seed or an already accepted receipt bypasses native
