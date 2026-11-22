@@ -12854,7 +12854,7 @@ run_spawn() {
     # target preference/default. Do not rely on tmux's ambient environment.
     engine=$(_session_engine "$SESSIONS_ROOT/$name" "${engine:-${CS_RUN_ENGINE:-}}") || return 1
     if [ "${#tasks[@]}" -gt 0 ]; then
-        _spawn_refuse_queue "$engine" ""
+        _spawn_refuse_queue "$engine" "" "$SESSIONS_ROOT/$name"
     fi
     # A seed waits for a launch that consumes it, and an adapter without
     # spawn_brief never does: refused here, before anything is staged.
@@ -13034,7 +13034,7 @@ _spawn_prepare_launch() {  # session_name, session_dir
         if [ "${_consume:-0}" = 1 ]; then
             local _has_brief=0 _qdir
             if [ "$_n" -gt 0 ]; then
-                _spawn_refuse_queue "${CS_RUN_ENGINE:-claude}" " (seed kept)"
+                _spawn_refuse_queue "${CS_RUN_ENGINE:-claude}" " (seed kept)" "$session_dir"
             fi
             if [ "${CS_RUN_ENGINE:-claude}" = codex ] && [ -e "$session_dir/.cs/local/spawn-kick.json" ]; then
                 error "An earlier spawn kickoff is pending; deliver it before taking another seed (seed kept)"
@@ -13142,10 +13142,14 @@ _spawn_take_back_tasks() {  # staged paths; _left belongs to the seed consumer
     done
 }
 
-# An adapter must own a drain before a seed is written or spent.
-_spawn_refuse_queue() {  # engine, suffix
+# An adapter must own a drain before a seed is written or spent, and a Codex
+# drain needs a session that is not encrypted.
+_spawn_refuse_queue() {  # engine, suffix, session_dir (when it exists)
     local status=0
     if cs_engine_supports "$1" task_queue; then
+        if [ "$1" = codex ] && [ -n "${3:-}" ] && is_session_dir "$3" && _switch_session_encrypted "$3"; then
+            error "An encrypted session cannot host a Codex walk-away queue: on macOS the agent can move its Codex home out from under cs's read-only rule and rewrite the history cs confirms tasks by. Use --brief without --task$2"
+        fi
         [ "$1" != codex ] || _codex_queue_version_ok || status=$?
         case "$status" in
             0) ;;
@@ -14068,6 +14072,9 @@ run_queue() {
             fi
             if [ "${1:-}" = workflow ] && [ "$engine" = codex ]; then
                 error "Codex queues run in the conversation or in subagents. Use cs -queue start or cs -queue start subagents."
+            fi
+            if [ "$engine" = codex ] && _switch_session_encrypted "$CS_SESSION_DIR"; then
+                error "An encrypted session cannot host a Codex walk-away queue: on macOS the agent can move its Codex home out from under cs's read-only rule and rewrite the history cs confirms tasks by. The queued tasks stay; run them under Claude, or move them to an unencrypted session."
             fi
             _queue_start "$qdir" "${1:-}" "$engine"
             ;;
@@ -21674,17 +21681,8 @@ _launch_codex_bound() {
         CS_NATIVE_LAUNCH_ARGS+=(--profile "${profile_name%.config.toml}")
     fi
     # The vault home stays out of the agent's reach (lib/76-codex-vault.sh).
-    # The queue reads Codex's history there only when cs's profile is on the
-    # command line: a native sandbox the user can switch mid-session keeps
-    # nothing read-only.
-    local vault_protected="" vault_resolved="" vault_id vault_args
     if [ -n "$vault_home" ]; then
-        vault_args=${#CS_NATIVE_LAUNCH_ARGS[@]}
         _codex_vault_profile_args "$vault_check" "$vault_home" "${CS_LAUNCH_APPROVAL:-auto}" || return 1
-        if [ "${#CS_NATIVE_LAUNCH_ARGS[@]}" -gt "$vault_args" ]; then
-            vault_protected=1
-        fi
-        vault_resolved=$(cd -P -- "$vault_home" 2>/dev/null && pwd -P) || vault_protected=""
     fi
     # The run's approval, for its hooks and the automatic /clear's watcher: a
     # run with native approval never quits for a switch unattended.
@@ -21726,10 +21724,6 @@ _launch_codex_bound() {
     # rotation countdown. The run supervisor owns its lifetime in both cases.
     if autoclear_dir=$(_codex_run_dir_prepare "$session_dir"); then
         _cs_run_helper_dir=$autoclear_dir
-        # Without the record the queue refuses; the launch goes on.
-        if [ -n "$vault_protected" ] && vault_id=$(cs_dir_identity "${vault_resolved%/*}"); then
-            ( set -C; printf '%s\n' "$vault_resolved" "$vault_id" > "$autoclear_dir/vault-home" ) 2>/dev/null || true
-        fi
         # Without this record the queue parks: an older Codex keeps no hook
         # provenance for its Stop to confirm a task by.
         if _codex_queue_version_ok "$codex_bin"; then
@@ -23125,27 +23119,10 @@ Scope: complete the behavior the task asks for. When the task is ambiguous, foll
 
 # Whether the agent cannot write Codex's history in a directory: it lies
 # under no writable root Codex's config adds, and outside the session, $TMPDIR
-# and /tmp, or else in the encrypted session's vault home that this run's
-# launch recorded as kept read-only by cs's permissions profile. The record is
-# in the run's private directory: the vault home's resolved path, then the
-# identity of the directory holding it. That directory lies in the session,
-# where the agent can swap it after this check, so a vault home passes the
-# record on in _CS_QUEUE_VAULT_HOME and _CS_QUEUE_VAULT_ID for the helper to
-# check again where it opens the rollout.
+# and /tmp.
 _codex_queue_history_protected() {  # dir
-    local run_dir record home="" id="" actual
-    _CS_QUEUE_VAULT_HOME="" _CS_QUEUE_VAULT_ID=""
-    ! _codex_run_dir_in_config_root "$1" "$CS_SESSION_DIR" || return 1
-    _codex_run_dir_in_sandbox_root "$1" "$CS_SESSION_DIR" || return 0
-    run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" || return 1
-    record="$run_dir/vault-home"
-    [ -f "$record" ] && [ ! -L "$record" ] || return 1
-    { IFS= read -r home && IFS= read -r id; } < "$record" || return 1
-    [ -n "$home" ] && _codex_dir_under "$1" "$home" || return 1
-    [ "$home" -ef "$(_codex_vault_home_path "$CS_SESSION_DIR")" ] || return 1
-    [ "$home" -ef "${CODEX_HOME:-}" ] || return 1
-    actual=$(cs_dir_identity "${home%/*}") && [ "$actual" = "$id" ] || return 1
-    _CS_QUEUE_VAULT_HOME=$home _CS_QUEUE_VAULT_ID=$id
+    ! _codex_run_dir_in_config_root "$1" "$CS_SESSION_DIR" \
+        && ! _codex_run_dir_in_sandbox_root "$1" "$CS_SESSION_DIR"
 }
 
 # Parks a queue no task of which can be confirmed: its Codex history is the
@@ -23161,6 +23138,19 @@ _codex_queue_refuse() {  # queue_dir, run_dir, handoff, kind
     _codex_queue_park "$1" "$2" "$CS_SESSION_DIR/.cs/local" "$remaining" "$4" 0 0 \
         || { _codex_queue_msg_exit "$3"; return; }
     return 0
+}
+
+# An encrypted session keeps Codex's home in its vault, under the session,
+# where on macOS the agent can rename it out from under cs's read-only rule
+# and rewrite the history a task is confirmed by. Nothing is handed out or
+# written to the queue, whose files lie behind .cs/private there; the spawner
+# hears once a run.
+_codex_queue_refuse_encrypted() {
+    local run_dir reason="cs task queue: an encrypted session cannot host a Codex walk-away queue, so cs hands out no tasks here. The queued tasks are still available; run them under Claude, or move them to an unencrypted session."
+    _codex_queue_message "$reason"
+    run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" || return 0
+    ( set -C; : > "$run_dir/queue-encrypted" ) 2>/dev/null || return 0
+    _codex_queue_notify "$CS_SESSION_DIR/.cs/local" "$reason"
 }
 
 # The pop runs inside queue/, entered by its physical path and checked again
@@ -23224,9 +23214,7 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
             && _codex_queue_history_protected "${roll%/*}" \
             && printf '%s' "$input" | jq -e '.stop_hook_active == true' >/dev/null; then
             snapshot=$("$helper" --queue-snapshot "$roll" --thread-id "$thread" --queue-turn "$turn" \
-                --queue-receipt "$token" ${offset:+--queue-offset "$offset"} \
-                ${_CS_QUEUE_VAULT_HOME:+--queue-home "$_CS_QUEUE_VAULT_HOME" --queue-home-id "$_CS_QUEUE_VAULT_ID"} \
-                2>/dev/null) || snapshot='{}'
+                --queue-receipt "$token" ${offset:+--queue-offset "$offset"} 2>/dev/null) || snapshot='{}'
         fi
         if ! printf '%s' "$snapshot" | jq -e '.delivered and .final_assistant' >/dev/null; then
             _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" unconfirmed 0 0 \
@@ -23293,9 +23281,6 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
         return 0
     fi
     # The rollout's size now: the next Stop reads this task's records from it.
-    # Read by path: a size taken from a swapped rollout can only make that read
-    # miss the receipt, which parks, or read more of the rollout, and the
-    # helper checks the vault home where it opens the rollout.
     offset=""
     roll=$(printf '%s' "$input" | jq -r '.transcript_path // empty')
     if [ -n "$roll" ] && [ -f "$roll" ] && [ ! -L "$roll" ] && _codex_queue_history_protected "${roll%/*}"; then
@@ -23324,6 +23309,11 @@ _codex_queue_stop() {  # session metadata, thread, handoff, Stop JSON
         return 1
     fi
     ! cs_files_tracked_notice "$1" "$CS_SESSION_DIR" >/dev/null || return 1
+    if _switch_session_encrypted "$CS_SESSION_DIR"; then
+        _codex_queue_refuse_encrypted
+        _codex_queue_msg_exit "$3"
+        return
+    fi
     if ! run_dir=$(_codex_run_dir) || ! _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR"; then
         cs_run_with_lease "$1" _codex_queue_refuse "$qdir" "" "$3" run_dir
         return

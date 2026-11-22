@@ -566,11 +566,13 @@ default of 10. If Codex cannot confirm a task handoff and final response from
 its active history, the task stays queued for inspection and re-arming.
 `cs -queue start` refuses while the drain runs; after an interrupted turn the
 next Stop parks the queue, and `cs -queue start` re-arms it then.
-An encrypted session drains when cs's permissions profile keeps the vault
-Codex home read-only: under automatic approval, or under native approval with
-the workspace sandbox. Under native approval with the read-only sandbox or full
-access, which get no profile, or with a writable root over Codex's history, the
-queue parks with a notice.
+An encrypted session cannot host a Codex walk-away queue. Codex's home lies
+in the vault, inside the session, and on macOS the agent can move it out from
+under cs's read-only rule and rewrite the history cs confirms tasks by.
+`cs -spawn --task` and `cs -queue start` refuse there, and an armed queue
+hands out no tasks: each Stop says so, the spawner gets one notice, and the
+tasks stay queued for Claude or an unencrypted session. Elsewhere, a writable
+root over Codex's history parks the queue with a notice.
 
 A native approval prompt waits for your answer. The first such prompt during
 a spawned drain sends the spawner a notice. An armed rotation takes priority

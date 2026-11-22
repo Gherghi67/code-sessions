@@ -1492,6 +1492,23 @@ test_a_task_queue_is_refused_when_codex_is_missing() {
     assert_not_exists "$(SEED)" "no seed is staged"
 }
 
+# On macOS the agent can move an encrypted session's Codex home out from
+# under cs's read-only rule and rewrite the history cs confirms tasks by:
+# Codex tasks for an existing encrypted session are refused before a seed is
+# staged, and Claude tasks for it still are.
+test_a_task_queue_is_refused_for_an_encrypted_codex_session() {
+    local out status=0
+    _launch_worker >/dev/null || return 1
+    _make_worker_vaulted
+    out=$("$CS_BIN" -spawn worker --engine codex --task 'do something' 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: --task into an encrypted session under Codex must be refused: $out"; return 1; }
+    assert_output_contains "$out" "An encrypted session cannot host a Codex walk-away queue: on macOS the agent can move its Codex home out from under cs's read-only rule and rewrite the history cs confirms tasks by. Use --brief without --task\$" || return 1
+    assert_not_exists "$(SEED)" "no seed is staged" || return 1
+    assert_not_exists "$FAKE_TMUX_DIR/session-exists" "no window opens" || return 1
+    "$CS_BIN" -spawn worker --engine claude --task 'do something' >/dev/null || return 1
+    assert_eq 'do something' "$(tail -n +3 "$(SEED)")"
+}
+
 # cs -spawn under an engine cs does not ship, for the refusals no shipped
 # engine reaches: bin/cs sourced without its closing main call, with a stub
 # adapter that declares the capabilities given. bash 3.2 sources nothing from
@@ -1537,6 +1554,7 @@ run_test test_spawn_propagates_the_selected_engine_and_inherits_the_current_run
 run_test test_codex_task_queue_spawn_stages_the_seed
 run_test test_a_task_queue_is_refused_under_an_old_codex
 run_test test_a_task_queue_is_refused_when_codex_is_missing
+run_test test_a_task_queue_is_refused_for_an_encrypted_codex_session
 run_test test_a_task_queue_is_refused_without_the_capability
 run_test test_a_brief_is_refused_under_an_engine_without_spawn_brief
 

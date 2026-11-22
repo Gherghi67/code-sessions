@@ -729,49 +729,17 @@ def codex_rollout(thread_id):
     return max(found, key=lambda path: (path.suffix == ".jsonl", path.stat().st_mtime))
 
 
-def queue_vault_rollout(path, thread_id, home, home_id):
-    """Open the rollout under an encrypted session's vault home, from the directory holding it.
-
-    That directory lies in the session, where the agent can rename it and build another under
-    its name, so it is opened once and checked against the identity cs recorded for it
-    (cs_dir_identity's <device>-<inode>), and every name below is opened from the one above."""
-    prefix = home + "/sessions/"
-    parent, _, name = home.rpartition("/")
-    below = path[len(prefix):].split("/") if path.startswith(prefix) else []
-    if (not path.startswith("/") or not parent or not below
-            or any(part in (".", "..") for part in path.split("/"))
-            or any(part in ("", ".", "..") for part in [name] + below)
-            or not below[-1].startswith("rollout-") or not below[-1].endswith("-" + thread_id + ".jsonl")):
-        raise BootstrapError("unexpected active rollout path")
-    folders = [os.open(parent, os.O_RDONLY | os.O_DIRECTORY)]
-    try:
-        info = os.fstat(folders[0])
-        if "{}-{}".format(info.st_dev, info.st_ino) != home_id:
-            raise BootstrapError("unexpected vault Codex home")
-        for part in [name, "sessions"] + below[:-1]:
-            folders.append(os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=folders[-1]))
-        return os.open(below[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folders[-1])
-    finally:
-        for folder in folders:
-            os.close(folder)
-
-
-def queue_rollout_records(path, thread_id, offset=None, home=None, home_id=None):
+def queue_rollout_records(path, thread_id, offset=None):
     """Read a bounded snapshot of the running thread, discarding a torn tail.
 
-    From the task's delivery offset when given, else the last 8 MiB. With home, the rollout
-    is opened as queue_vault_rollout says."""
-    if home is not None:
-        rollout = queue_vault_rollout(os.fspath(path), thread_id, home, home_id)
-    else:
-        sessions = (Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "sessions").resolve()
-        path = Path(path)
-        if (not path.is_absolute() or path.is_symlink() or sessions not in path.resolve().parents
-                or not path.name.endswith("-" + thread_id + ".jsonl")
-                or not path.name.startswith("rollout-")):
-            raise BootstrapError("unexpected active rollout path")
-        rollout = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(rollout, "rb") as handle:
+    From the task's delivery offset when given, else the last 8 MiB."""
+    sessions = (Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "sessions").resolve()
+    path = Path(path)
+    if (not path.is_absolute() or path.is_symlink() or sessions not in path.resolve().parents
+            or not path.name.endswith("-" + thread_id + ".jsonl")
+            or not path.name.startswith("rollout-")):
+        raise BootstrapError("unexpected active rollout path")
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as handle:
         info = os.fstat(handle.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
             raise BootstrapError("unexpected active rollout file")
@@ -850,8 +818,7 @@ def queue_snapshot(args):
     receipt = re.compile(r'\A<hook_prompt hook_run_id="stop:[^"\n]+">cs task queue \['
                          + re.escape(args.queue_receipt or "") + r'\]:')
     try:
-        for record in queue_rollout_records(args.queue_snapshot, args.thread_id, args.queue_offset,
-                                            args.queue_home, args.queue_home_id):
+        for record in queue_rollout_records(args.queue_snapshot, args.thread_id, args.queue_offset):
             payload = record.get("payload")
             if not isinstance(payload, dict):
                 continue
@@ -2026,10 +1993,6 @@ def main():
     parser.add_argument("--queue-receipt")
     parser.add_argument("--queue-offset", type=int, metavar="BYTES",
                         help="read the rollout from the current task's delivery, not its last 8 MiB")
-    parser.add_argument("--queue-home", metavar="DIR",
-                        help="the vault Codex home the rollout lies under, opened from the directory holding it")
-    parser.add_argument("--queue-home-id", metavar="DEVICE-INODE",
-                        help="the identity cs recorded for the directory holding --queue-home")
     parser.add_argument("--seed-config", action="store_true",
                         help="copy --shared-home's config.toml and rules/ into --home, the config's hook trust re-keyed")
     parser.add_argument("--vault-check", action="store_true",
@@ -2073,8 +2036,6 @@ def main():
             parser.error("--queue-snapshot needs --thread-id and --queue-turn")
         if args.queue_offset is not None and args.queue_offset < 0:
             parser.error("--queue-offset must not be negative")
-        if (args.queue_home is None) != (args.queue_home_id is None):
-            parser.error("--queue-home and --queue-home-id go together")
     elif args.seed_config:
         if args.shared_home is None or args.home is None or args.cwd is None:
             parser.error("--seed-config needs --shared-home, --home and --cwd")

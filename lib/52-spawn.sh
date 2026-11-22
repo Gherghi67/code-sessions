@@ -310,7 +310,7 @@ run_spawn() {
     # target preference/default. Do not rely on tmux's ambient environment.
     engine=$(_session_engine "$SESSIONS_ROOT/$name" "${engine:-${CS_RUN_ENGINE:-}}") || return 1
     if [ "${#tasks[@]}" -gt 0 ]; then
-        _spawn_refuse_queue "$engine" ""
+        _spawn_refuse_queue "$engine" "" "$SESSIONS_ROOT/$name"
     fi
     # A seed waits for a launch that consumes it, and an adapter without
     # spawn_brief never does: refused here, before anything is staged.
@@ -490,7 +490,7 @@ _spawn_prepare_launch() {  # session_name, session_dir
         if [ "${_consume:-0}" = 1 ]; then
             local _has_brief=0 _qdir
             if [ "$_n" -gt 0 ]; then
-                _spawn_refuse_queue "${CS_RUN_ENGINE:-claude}" " (seed kept)"
+                _spawn_refuse_queue "${CS_RUN_ENGINE:-claude}" " (seed kept)" "$session_dir"
             fi
             if [ "${CS_RUN_ENGINE:-claude}" = codex ] && [ -e "$session_dir/.cs/local/spawn-kick.json" ]; then
                 error "An earlier spawn kickoff is pending; deliver it before taking another seed (seed kept)"
@@ -598,10 +598,14 @@ _spawn_take_back_tasks() {  # staged paths; _left belongs to the seed consumer
     done
 }
 
-# An adapter must own a drain before a seed is written or spent.
-_spawn_refuse_queue() {  # engine, suffix
+# An adapter must own a drain before a seed is written or spent, and a Codex
+# drain needs a session that is not encrypted.
+_spawn_refuse_queue() {  # engine, suffix, session_dir (when it exists)
     local status=0
     if cs_engine_supports "$1" task_queue; then
+        if [ "$1" = codex ] && [ -n "${3:-}" ] && is_session_dir "$3" && _switch_session_encrypted "$3"; then
+            error "An encrypted session cannot host a Codex walk-away queue: on macOS the agent can move its Codex home out from under cs's read-only rule and rewrite the history cs confirms tasks by. Use --brief without --task$2"
+        fi
         [ "$1" != codex ] || _codex_queue_version_ok || status=$?
         case "$status" in
             0) ;;

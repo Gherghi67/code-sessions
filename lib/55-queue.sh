@@ -370,6 +370,9 @@ run_queue() {
             if [ "${1:-}" = workflow ] && [ "$engine" = codex ]; then
                 error "Codex queues run in the conversation or in subagents. Use cs -queue start or cs -queue start subagents."
             fi
+            if [ "$engine" = codex ] && _switch_session_encrypted "$CS_SESSION_DIR"; then
+                error "An encrypted session cannot host a Codex walk-away queue: on macOS the agent can move its Codex home out from under cs's read-only rule and rewrite the history cs confirms tasks by. The queued tasks stay; run them under Claude, or move them to an unencrypted session."
+            fi
             _queue_start "$qdir" "${1:-}" "$engine"
             ;;
         log)   _queue_log "$qdir";;

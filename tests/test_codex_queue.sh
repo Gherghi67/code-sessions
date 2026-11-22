@@ -12,6 +12,7 @@ source "$SCRIPT_DIR/../lib/76-codex.sh"
 source "$SCRIPT_DIR/../lib/76-codex-vault.sh"
 source "$SCRIPT_DIR/../lib/77-codex-hooks.sh"
 source "$SCRIPT_DIR/../lib/77-codex-queue.sh"
+source "$SCRIPT_DIR/../lib/78-switch.sh"
 
 THREAD=01a1f60d-c642-7f33-be26-0950816bebc6
 TURN=01a1f60d-c65b-7580-ad01-c808f64794b6
@@ -484,7 +485,7 @@ _arm_handoff() {
 }
 
 # A watcher of this run's, which this shell stands in for, and no pending
-# switch (lib/78-switch.sh is not sourced here).
+# switch.
 _live_watcher() {
     printf '%s %s\n' "$$" "$RUN" > "$CS_CACHE_DIR/codex-runs/$RUN/watcher.pid"
     _switch_file() { return 1; }
@@ -689,67 +690,33 @@ test_codex_history_under_a_writable_root_is_refused() (
 )
 
 # An encrypted session: .cs/private links into the vault, which holds the
-# queue and, unless another is named, Codex's home, spelled as cs exports it.
-_vault_layout() {  # [codex_home]
+# queue and Codex's home, spelled as cs exports it.
+_vault_layout() {
     local vault="$CS_SESSION_DIR/.cs/vault-mnt/private"
     mkdir -p "$vault"
     mv "$QDIR/queue" "$QDIR/queue.state" "$vault/"
     ln -s vault-mnt/private "$CS_SESSION_DIR/.cs/private"
     QDIR="$CS_SESSION_DIR/.cs/private"
-    _rollout_under "${1:-$(_codex_vault_home_path "$CS_SESSION_DIR")}"
+    _rollout_under "$(_codex_vault_home_path "$CS_SESSION_DIR")"
 }
 
-# The record a launch leaves in the run directory when cs's permissions
-# profile keeps the vault home read-only to the agent.
-_vault_record() {  # home
-    local home
-    home=$(cd -P "$1" && pwd -P)
-    printf '%s\n' "$home" "$(cs_dir_identity "${home%/*}")" > "$CS_CACHE_DIR/codex-runs/$RUN/vault-home"
-}
-
-# The helper checks the recorded home again where it opens the rollout; the
-# wrapper logs what the snapshot was given.
-test_an_encrypted_vault_home_drains() (
-    local first second
-    _vault_layout
-    _vault_record "$CODEX_HOME"
-    export CS_REAL_HELPER="$CS_CODEX_THREAD_BIN" CS_HELPER_ARGV="$TEST_TMPDIR/helper-argv"
-    CS_CODEX_THREAD_BIN="$TEST_TMPDIR/helper logging argv"
-    cat > "$CS_CODEX_THREAD_BIN" <<'EOF'
-#!/bin/bash
-printf '%s\n' "$*" >> "$CS_HELPER_ARGV"
-exec "$CS_REAL_HELPER" "$@"
-EOF
-    chmod +x "$CS_CODEX_THREAD_BIN"
-    first=$(_stop)
-    assert_output_contains "$first" 'first task' || return 1
-    _deliver "$first"
-    second=$(_stop true)
-    assert_output_contains "$second" 'second task' || return 1
-    assert_eq 'first task' "$(cat "$QDIR/queue.done")" || return 1
-    assert_output_contains "$(grep -F -e --queue-snapshot "$CS_HELPER_ARGV")" \
-        "--queue-home $CODEX_HOME --queue-home-id $(sed -n 2p "$CS_CACHE_DIR/codex-runs/$RUN/vault-home")\$" \
-        "the snapshot checks the recorded home"
-)
-
-test_an_unrecorded_vault_home_parks_once() (
-    local out
+# On macOS the agent can move the vault's Codex home out from under cs's
+# read-only rule and rewrite the history a task is confirmed by: an armed
+# queue in an encrypted session hands out nothing and writes no queue state,
+# and the spawner hears once a run.
+test_an_encrypted_session_hands_out_no_task() (
+    local out reason
+    reason="cs task queue: an encrypted session cannot host a Codex walk-away queue, so cs hands out no tasks here. The queued tasks are still available; run them under Claude, or move them to an unencrypted session."
     printf 'boss\n' > "$CS_SESSION_DIR/.cs/local/spawned-by"
     _vault_layout
     out=$(_stop)
-    _assert_history_park "$out" || return 1
-    _stop >/dev/null
-    assert_eq 1 "$(wc -l < "$CS_CACHE_DIR/notify.log" | tr -d ' ')" "one notice a drain"
-)
-
-test_a_vault_record_for_another_home_is_refused() (
-    local out
-    printf 'boss\n' > "$CS_SESSION_DIR/.cs/local/spawned-by"
-    mkdir -p "$CS_SESSION_DIR/fake-home"
-    _vault_layout "$CS_SESSION_DIR/fake-home"
-    _vault_record "$CODEX_HOME"
+    assert_eq "$reason" "$(printf '%s\n' "$out" | jq -r .systemMessage)" || return 1
+    assert_file_exists "$QDIR/queue/001" || return 1
+    assert_eq armed "$(cat "$QDIR/queue.state")" "no queue state is written" || return 1
+    assert_not_exists "$QDIR/queue.current" || return 1
     out=$(_stop)
-    _assert_history_park "$out"
+    assert_eq "$reason" "$(printf '%s\n' "$out" | jq -r .systemMessage)" "every Stop says so" || return 1
+    assert_eq "-msg boss -k notify $reason" "$(cat "$CS_CACHE_DIR/notify.log")" "the spawner hears once a run"
 )
 
 run_test test_drains_and_notifies_once
@@ -786,7 +753,5 @@ run_test test_an_unreadable_next_task_parks
 run_test test_a_write_error_still_counts_down_an_armed_rotation
 run_test test_codex_history_inside_the_session_is_refused
 run_test test_codex_history_under_a_writable_root_is_refused
-run_test test_an_encrypted_vault_home_drains
-run_test test_an_unrecorded_vault_home_parks_once
-run_test test_a_vault_record_for_another_home_is_refused
+run_test test_an_encrypted_session_hands_out_no_task
 report_results

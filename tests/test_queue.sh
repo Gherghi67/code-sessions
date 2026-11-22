@@ -1661,6 +1661,23 @@ test_queue_in_an_encrypted_session_lives_in_its_vault() {
     done
 }
 
+# On macOS the agent can move an encrypted session's Codex home out from
+# under cs's read-only rule and rewrite the history cs confirms tasks by, so
+# cs -queue start arms no Codex queue there.
+test_queue_start_refuses_an_encrypted_codex_session() {
+    local out rc=0
+    _make_private_queue
+    "$CS_BIN" -queue add "sealed task" >/dev/null 2>&1 || return 1
+    printf 'engine: codex\n' > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/state"
+    out=$("$CS_BIN" -queue start 2>&1) || rc=$?
+    assert_eq "1" "$rc" "start in an encrypted Codex session fails" || return 1
+    assert_eq "Error: An encrypted session cannot host a Codex walk-away queue: on macOS the agent can move its Codex home out from under cs's read-only rule and rewrite the history cs confirms tasks by. The queued tasks stay; run them under Claude, or move them to an unencrypted session." \
+        "$out" "the refusal names the reason" || return 1
+    assert_not_exists "$TEST_TMPDIR/vault/private/queue.state" "nothing is armed" || return 1
+    assert_file_contains "$TEST_TMPDIR/vault/private/queue/$(ls "$TEST_TMPDIR/vault/private/queue")" \
+        "sealed task" "the task stays queued"
+}
+
 test_queue_in_a_locked_session_is_refused() {
     ln -s "$TEST_TMPDIR/unmounted/private" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private"
     local out rc=0
@@ -1692,6 +1709,7 @@ test_queue_names_a_locked_vault_by_a_plain_target() {
 }
 
 run_test test_queue_in_an_encrypted_session_lives_in_its_vault
+run_test test_queue_start_refuses_an_encrypted_codex_session
 run_test test_queue_in_a_locked_session_is_refused
 run_test test_queue_names_a_locked_vault_by_a_plain_target
 

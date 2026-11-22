@@ -668,53 +668,6 @@ test_native_approval_follows_the_users_sandbox() {
     assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
 }
 
-# The queue reads Codex's history in the vault only when the launch recorded,
-# in the run's private directory, that cs's profile keeps the vault home
-# read-only: the resolved path, then the identity of the directory holding it.
-# The fake Codex copies the record while the run directory stands.
-test_a_read_only_vault_home_is_recorded_for_the_queue() (
-    _vault_fixture
-    local output status=0 record="$TEST_TMPDIR/vault-home-record"
-    # The fixture's cache lies under TMPDIR, which the real check rightly refuses.
-    _codex_run_dir_in_sandbox_root() { _codex_dir_under "$1" "$2"; }
-    export CS_REAL_CODEX="$CODEX_BIN" CS_VAULT_RECORD="$record"
-    export CODEX_BIN="$TEST_TMPDIR/codex recording"
-    cat > "$CODEX_BIN" <<'FAKE'
-#!/usr/bin/env bash
-if [ "${1:-}" != --help ]; then
-    run_dir="${CS_CACHE_DIR:-$HOME/.cache/cs}/codex-runs/$CS_RUN_ID"
-    [ ! -d "$run_dir" ] || touch "$CS_VAULT_RECORD.run-dir"
-    cp "$run_dir/vault-home" "$CS_VAULT_RECORD" 2>/dev/null || true
-fi
-exec "$CS_REAL_CODEX" "$@"
-FAKE
-    chmod +x "$CODEX_BIN"
-    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
-    assert_eq 0 "$status" "launch failed: $output" || return 1
-    assert_file_exists "$record.run-dir" "the run had a private directory" || return 1
-    assert_eq "$VAULT_HOME
-$(cs_dir_identity "${VAULT_HOME%/*}")" "$(cat "$record" 2>/dev/null)" "automatic approval records the vault home" || return 1
-    export CS_LAUNCH_APPROVAL=native
-    # Read-only and full access get no profile, so a sandbox the user can
-    # switch mid-session never leaves a writable home recorded as kept.
-    local mode
-    for mode in read-only danger-full-access; do
-        rm -f "$record" "$record.run-dir"
-        export CS_HELPER_VAULT_CHECK="{\"sandbox_mode\":\"$mode\",\"default_permissions\":null,\"sandbox_workspace_write\":{},\"profile_defined\":false,\"untrusted\":[]}"
-        status=0
-        output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
-        assert_eq 0 "$status" "$mode launch failed: $output" || return 1
-        assert_file_exists "$record.run-dir" "the run had a private directory" || return 1
-        assert_not_exists "$record" "$mode leaves the vault home unrecorded" || return 1
-    done
-    rm -f "$record" "$record.run-dir"
-    export CS_HELPER_VAULT_CHECK='{"sandbox_mode":"workspace-write","default_permissions":null,"sandbox_workspace_write":{},"profile_defined":false,"untrusted":[]}'
-    status=0
-    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
-    assert_eq 0 "$status" "workspace launch failed: $output" || return 1
-    assert_file_exists "$record" "cs's profile on the workspace sandbox records the vault home"
-)
-
 # The queue confirms each task by the hook provenance Codex writes from
 # CS_CODEX_QUEUE_MIN_VERSION on, so its Stop parks unless the launch recorded
 # such a build in the run's private directory. The fake Codex notes the
@@ -1986,7 +1939,6 @@ run_test test_a_linked_vault_home_stops_the_open
 run_test test_vault_home_refusals_name_the_home_as_a_plain_name
 run_test test_the_vault_profile_keeps_the_users_workspace_settings
 run_test test_native_approval_follows_the_users_sandbox
-run_test test_a_read_only_vault_home_is_recorded_for_the_queue
 run_test test_a_codex_that_hosts_the_queue_is_recorded
 run_test test_the_vault_check_refuses_what_cs_cannot_confine
 run_test test_an_inherited_vault_home_is_dropped
