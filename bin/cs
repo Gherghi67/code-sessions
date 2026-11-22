@@ -23166,7 +23166,9 @@ _codex_queue_deliver() {  # queue_dir, run_dir, thread, turn, next_path, remaini
     local token name task reason mode=""
     token=$(_alloc_uuid) && _is_uuid "$token" || return 1
     name="${5##*/}"
-    [ -f "$5" ] && [ ! -L "$5" ] && IFS= read -r task < "$5" || return 1
+    # Through the helper, as the pop reads it: queue/ can be swapped for a
+    # link after the Stop picked the name.
+    task=$(_codex_queue_fs "$1" first-line "queue/$name" </dev/null) || return 1
     if [ -f "$1/queue.mode" ] && [ ! -L "$1/queue.mode" ]; then
         IFS= read -r mode < "$1/queue.mode" || true
     fi

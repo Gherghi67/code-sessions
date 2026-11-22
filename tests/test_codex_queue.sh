@@ -777,6 +777,28 @@ test_a_notifications_link_flipped_after_the_check_gets_nothing() (
     assert_output_contains "$out" 'second task'
 )
 
+# Run as a DEBUG trap: once the Stop has picked the next task by name and
+# starts to deliver it, swap queue/ for a link to $SWAP_OUTSIDE, as a process
+# racing the Stop could.
+_swap_queue_at_delivery() {
+    [ "${FUNCNAME[1]:-}" = _codex_queue_deliver ] || return 0
+    [ ! -L "$QDIR/queue" ] || return 0
+    mv "$QDIR/queue" "$QDIR/queue.real" && ln -s "$SWAP_OUTSIDE" "$QDIR/queue"
+}
+
+# The helper's walk refuses the swapped queue/, so nothing outside the session
+# reaches the block reason, and the delivery fails as an unreadable task does.
+test_the_next_task_is_read_from_the_queue_folder() {
+    local out SWAP_OUTSIDE="$TEST_TMPDIR/outside"
+    mkdir -p "$SWAP_OUTSIDE"
+    printf 'outside line\n' > "$SWAP_OUTSIDE/001"
+    out=$(set -T; trap _swap_queue_at_delivery DEBUG; _stop)
+    assert_symlink "$QDIR/queue" "queue/ was swapped before the read" || return 1
+    assert_output_not_contains "$out" 'outside line' || return 1
+    assert_output_contains "$(printf '%s\n' "$out" | jq -r .systemMessage)" 'could not update queue state' || return 1
+    assert_eq 'first task' "$(cat "$QDIR/queue.real/001" 2>/dev/null)" "the task stays in queue/"
+}
+
 test_rotation_commits_the_boundary_then_resumes_the_next_task() (
     local first during after
     first=$(_stop)
@@ -1198,6 +1220,7 @@ run_test test_a_hard_linked_queue_done_gets_nothing
 run_test test_a_link_flipped_after_the_check_gets_nothing
 run_test test_a_hard_linked_notifications_file_gets_nothing
 run_test test_a_notifications_link_flipped_after_the_check_gets_nothing
+run_test test_the_next_task_is_read_from_the_queue_folder
 run_test test_rotation_commits_the_boundary_then_resumes_the_next_task
 run_test test_rotation_without_a_countdown_notifies_the_spawner
 run_test test_rotation_with_a_live_watcher_does_not_notify
