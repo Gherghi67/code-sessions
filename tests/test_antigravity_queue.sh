@@ -4,6 +4,9 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/test_lib.sh"
 source "$SCRIPT_DIR/../lib/02-shared.sh"
+source "$SCRIPT_DIR/../lib/05-term.sh"
+source "$SCRIPT_DIR/../lib/24-engine-adapters.sh"
+source "$SCRIPT_DIR/../lib/25-deps.sh"
 source "$SCRIPT_DIR/../lib/40-state.sh"
 source "$SCRIPT_DIR/../lib/41-bindings.sh"
 source "$SCRIPT_DIR/../lib/55-queue.sh"
@@ -55,7 +58,8 @@ record() {
 
 stop() {
     jq -nc --arg cid "${3:-$THREAD}" --arg path "$TRANSCRIPT" --argjson n "$1" --argjson idle "${2:-true}" \
-        '{conversationId:$cid,transcriptPath:$path,executionNum:$n,fullyIdle:$idle,terminationReason:"NO_TOOL_CALL",lastUserInput:"go"}' |
+        --arg reason "${4:-NO_TOOL_CALL}" \
+        '{conversationId:$cid,transcriptPath:$path,executionNum:$n,fullyIdle:$idle,terminationReason:$reason,lastUserInput:"go"}' |
         cmd_antigravity_hook stop
 }
 
@@ -100,6 +104,25 @@ test_ignores_busy_and_unrelated_stops() {
     assert_eq '{}' "$(stop 0 false)" || return 1
     assert_eq '{}' "$(stop 0 true "$RUN")" || return 1
     assert_eq armed "$(cat "$QDIR/queue.state")"
+}
+
+test_terminal_stop_parks_and_allows_rearm_with_a_live_lease() {
+    local first reason
+    printf 'engine: antigravity\n' > "$QDIR/state"
+    setup_palette
+    _antigravity_queue_version_ok() { return 0; }
+    for reason in USER_CANCELED ERROR; do
+        first=$(stop 0)
+        assert_output_contains "$first" 'first task' || return 1
+        assert_eq '{}' "$(stop -1 false "$THREAD" "$reason")" || return 1
+        assert_eq idle "$(cat "$QDIR/queue.state")" "terminal Stop $reason parks the drain" || return 1
+        assert_not_exists "$QDIR/queue.current" || return 1
+        assert_not_exists "$QDIR/queue.done" || return 1
+        assert_file_exists "$QDIR/queue/001" || return 1
+        assert_file_contains "$QDIR/notifications.jsonl" "interrupted .*$reason" || return 1
+        CS_RUN_ENGINE= run_queue start || return 1
+        assert_eq armed "$(cat "$QDIR/queue.state")" || return 1
+    done
 }
 
 test_finishes_the_active_task_before_yielding_to_rotation() {
@@ -188,6 +211,7 @@ test_rejects_a_link_in_native_history() {
 run_test test_drains_two_tasks_with_provenance
 run_test test_leaves_an_interrupted_delivery_queued
 run_test test_ignores_busy_and_unrelated_stops
+run_test test_terminal_stop_parks_and_allows_rearm_with_a_live_lease
 run_test test_finishes_the_active_task_before_yielding_to_rotation
 run_test test_keeps_a_task_that_reports_failure
 run_test test_finishes_on_a_background_wake

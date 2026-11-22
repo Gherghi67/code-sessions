@@ -24325,6 +24325,15 @@ _antigravity_queue_owned() {  # event payload, run dir, execution
     [ "$qdir" = "$CS_SESSION_DIR/.cs/local" ] || return 1
     cache=$(_antigravity_queue_cache "$CS_SESSION_DIR") || return 1
     state=$(_antigravity_queue_read "$cache") || return 1
+    case "$AGY_HOOK_TERMINATION" in
+        USER_CANCELED|ERROR)
+            if printf '%s\n' "$state" | jq -e --arg run "$CS_RUN_ID" --arg cid "$AGY_HOOK_ID" \
+                '.task.run == $run and .task.cid == $cid' >/dev/null; then
+                _antigravity_queue_park "$cache" "$qdir" "$state" "the active task was interrupted ($AGY_HOOK_TERMINATION)"
+            fi
+            return 1
+            ;;
+    esac
     if [ "$AGY_HOOK_IDLE" != 1 ]; then
         # A mail continuation here could supply the next planner response
         # while the task is still waiting for its background work.
@@ -24414,11 +24423,16 @@ _antigravity_queue_run() {  # verified native hook
 }
 
 _antigravity_queue_stop() {  # payload
-    local run execution
-    [ "$AGY_HOOK_TERMINATION" = NO_TOOL_CALL ] || return 1
+    local run execution=""
+    case "$AGY_HOOK_TERMINATION" in
+        NO_TOOL_CALL)
+            execution=$(printf '%s\n' "$1" | jq -er '.executionNum | numbers | select(. == floor and . >= 0 and . <= 100)') || return 1
+            ;;
+        USER_CANCELED|ERROR) ;;
+        *) return 1 ;;
+    esac
     [ -f "$CS_SESSION_DIR/.cs/local/queue.state" ] || return 1
     run=$(_antigravity_queue_run) || return 1
-    execution=$(printf '%s\n' "$1" | jq -er '.executionNum | numbers | select(. == floor and . >= 0 and . <= 100)') || return 1
     cs_run_with_lease "$CS_SESSION_DIR/.cs" _antigravity_queue_owned "$1" "$run" "$execution"
 }
 
