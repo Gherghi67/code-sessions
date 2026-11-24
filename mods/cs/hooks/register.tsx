@@ -5,7 +5,7 @@
 // ABOUTME: Above the prompt a band: the key that starts a queue nothing runs, mail, the features word and the /finish gate, and the keys themselves where the footer has no safe place for them.
 // ABOUTME: A turn ending past CS_ROTATE_FORCE_CTX (default 80, off disables) runs /rotate itself, then counts down to the /clear (session colour, amber, crit); session.start writes a heartbeat for doctor.
 // ABOUTME: /queue adds a task to the session's walk-away queue through `cs -queue add`, at once even mid-turn; bare, it prints `cs -queue list`. /finish toasts its start and outcome and, while its gate runs, the band carries the elapsed time.
-// ABOUTME: The band carries a rail: one tick per prompt on the transcript's live branch (read after each turn), the one being read thick; a press or /cs next|prev|first|last|N scrolls the transcript to that prompt; bare /cs goes on to the cs panel.
+// ABOUTME: The band carries a rail: one tick per prompt on the transcript's live branch (read after each turn), the one being read thick; a press or /cs next|prev|first|last|N scrolls the transcript to that prompt, and after `/cs ` the typeahead lists those words and the prompts a typed word matches; bare /cs goes on to the cs panel.
 import type { On, EngineInterface, RenderElement, RenderSurface } from 'claude-code'
 
 declare const h: any
@@ -411,12 +411,23 @@ let settingsInFlight: Promise<void> | undefined
 let settingsComplaint: string | undefined
 
 // The rail. A prompt is a row of the transcript's live branch; its requestId
-// is the id the engine drew its UserMessage row under, once seen.
-export type Prompt = { uuid: string; text: string }
+// is the id the engine drew its UserMessage row under, once seen. `text` is
+// its first line as the rail shows it, cut to RAIL_TEXT_CHARS; `line` is
+// that whole line, which the typeahead searches.
+export type Prompt = { uuid: string; text: string; line: string }
 // How much of a prompt's first line a tick carries as its text.
 export const RAIL_TEXT_CHARS = 80
 // The fewest cells before the rail that name a prompt.
 const RAIL_LABEL_MIN = 10
+// The most prompts the typeahead lists after `/cs `.
+export const PROMPT_ROWS = 8
+// The words /cs takes beside a number, and what each scrolls to.
+const RAIL_WORDS: readonly { word: string; goes: string }[] = [
+  { word: 'next', goes: 'the prompt after the one being read' },
+  { word: 'prev', goes: 'the prompt before the one being read' },
+  { word: 'first', goes: 'the first prompt' },
+  { word: 'last', goes: 'the newest prompt' },
+]
 // `$.fs.read` refuses a file over this; a longer transcript is read from its tail.
 const READ_CAP = 4 * 1024 * 1024
 // What the transcript last read held, and the file it was: the file is parsed
@@ -566,6 +577,17 @@ export function register(on: On) {
     if (target < 0 || target >= count) return { text: REPLIES.railCount(count) }
     await jumpTo($, target)
     return {}
+  })
+
+  // After `/cs ` the prompt box's typeahead lists where the command can go:
+  // the rail words the typed word starts, then the prompts it names by number
+  // or by a word of their first line. Taking a row writes the word or the
+  // number in place of what was typed. The rows go after the ones this hook
+  // was handed, and any other draft passes through as it came.
+  on('prompt.autocomplete', async (_$, e, next) => {
+    const handed = await next(e)
+    const mine = promptRows(prompts, e.text, e.start, e.token)
+    return mine.length === 0 ? handed : { suggestions: [...handed.suggestions, ...mine] }
   })
 
   // The end of a turn is the one moment a rotation can be started for the
@@ -1761,8 +1783,30 @@ function fitRight(text: string, width: number): string {
   return ' '.repeat(Math.max(0, width - cellWidth(fitted))) + fitted
 }
 
+// The typeahead rows for the word at the cursor (`token`, starting at
+// `start` in the draft `text`) when it is the first argument of /cs: the
+// rail words it starts, then the newest PROMPT_ROWS prompts whose number it
+// starts or whose whole first line holds it, whatever the case, each shown
+// by its rail text. None for any other draft, or while the rail has no
+// prompts.
+export function promptRows(list: Prompt[], text: string, start: number, token: string): { text: string; label: string; description: string }[] {
+  if (list.length === 0 || !/^\/cs\s+$/.test(text.slice(0, start))) return []
+  const typed = token.toLowerCase()
+  const words = RAIL_WORDS.filter(w => w.word.startsWith(typed)).map(w => ({ text: w.word, label: w.word, description: w.goes }))
+  const matches = list.map((p, i) => ({ number: String(i + 1), prompt: p }))
+    .filter(m => m.number.startsWith(typed) || m.prompt.line.toLowerCase().includes(typed))
+    .reverse().slice(0, PROMPT_ROWS)
+    .map(m => ({ text: m.number, label: m.number, description: m.prompt.text }))
+  return [...words, ...matches]
+}
+
+// The first non-blank line of `text`, trimmed.
+function wholeFirstLine(text: string): string {
+  return text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
+}
+
 function firstLine(text: string): string {
-  const line = text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
+  const line = wholeFirstLine(text)
   const pieces = graphemes(line)
   return pieces.length > RAIL_TEXT_CHARS ? `${pieces.slice(0, RAIL_TEXT_CHARS - 1).join('')}\u2026` : line
 }
@@ -1892,7 +1936,7 @@ export function parsePrompts(jsonl: string): Prompt[] {
     if (text === undefined) continue
     const line = firstLine(text)
     if (line === '' || FRAMED.test(line) || INTERRUPT.test(line)) continue
-    out.push({ uuid: r.uuid, text: line })
+    out.push({ uuid: r.uuid, text: line, line: wholeFirstLine(text) })
   }
   return out
 }

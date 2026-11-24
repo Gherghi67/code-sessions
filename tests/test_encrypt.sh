@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
 # ABOUTME: Tests for cs -encrypt: the refusals, the vault it builds for an existing session,
-# ABOUTME: and how it stops. hdiutil, uname and mount are PATH stubs that log every call.
+# ABOUTME: and how it stops. diskutil, uname and mount are PATH stubs that log every call.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGY_ENCRYPT_CACHE_PARENT="$HOME/.cache"
 # shellcheck source=tests/test_lib.sh
 source "$SCRIPT_DIR/test_lib.sh"
 
-# PATH stubs: uname answers $FAKE_UNAME; hdiutil logs its argv, one call per
-# line, and fails the verb named in $FAKE_HDIUTIL_FAIL.
+# The vault prompt draws a lock glyph when the shell exports CS_NERD_FONTS=1;
+# these tests read the rows without it.
+export CS_NERD_FONTS=0
+# NO_COLOR blanks every colour cs draws; one test reads the palette's amber.
+unset NO_COLOR
+
+# PATH stubs: uname answers $FAKE_UNAME; diskutil logs its argv, one call per
+# line, and fails the verb named in $FAKE_DISKUTIL_FAIL (create, attach or
+# eject, or --help for the probe `diskutil image --help`). What create and
+# attach read on stdin, the vault password, is kept in $FAKE_DISKUTIL_LOG.stdin
+# with its length in bytes, one line per call, so a stray newline shows.
 _stubs() {
     local d="$TEST_TMPDIR/stub"
     mkdir -p "$d"
@@ -16,51 +25,67 @@ _stubs() {
 #!/bin/sh
 echo "${FAKE_UNAME:-Darwin}"
 EOF
-    cat > "$d/hdiutil" <<'EOF'
+    cat > "$d/diskutil" <<'EOF'
 #!/bin/sh
-echo "$*" >> "$FAKE_HDIUTIL_LOG"
-[ "$1" = "${FAKE_HDIUTIL_FAIL:-}" ] && { echo "hdiutil: $1 failed - stub" >&2; exit 1; }
-# The verb named in $FAKE_HDIUTIL_HOLD never finishes by itself: it stays in
+verb=$1
+[ "$1" = image ] && verb=$2
+echo "$*" >> "$FAKE_DISKUTIL_LOG"
+case "$verb" in create|attach) pw=$(cat; printf .); pw=${pw%.}; printf '%s [%s bytes]\n' "$pw" "${#pw}" >> "$FAKE_DISKUTIL_LOG.stdin" ;; esac
+[ "$verb" = "${FAKE_DISKUTIL_FAIL:-}" ] && { echo "diskutil: $verb failed - stub" >&2; exit 1; }
+# The first $FAKE_DISKUTIL_WRONG attaches answer as the real one does to a wrong password.
+if [ "$verb" = "attach" ] && [ -n "${FAKE_DISKUTIL_WRONG:-}" ]; then
+    n=$(grep -c ' attach ' "$FAKE_DISKUTIL_LOG")
+    [ "$n" -le "$FAKE_DISKUTIL_WRONG" ] && { echo "Error: Incorrect passphrase"; exit 1; }
+fi
+# The verb named in $FAKE_DISKUTIL_HOLD never finishes by itself: it stays in
 # flight until something stops it, or until the log is gone, so a test that
 # fails leaves nothing running.
-if [ "$1" = "${FAKE_HDIUTIL_HOLD:-}" ]; then
-    while [ -e "$FAKE_HDIUTIL_LOG" ]; do sleep 0.1; done
+if [ "$verb" = "${FAKE_DISKUTIL_HOLD:-}" ]; then
+    while [ -e "$FAKE_DISKUTIL_LOG" ]; do sleep 0.1; done
     exit 0
 fi
 # With $FAKE_LOCK_WATCH set, create records whether that lock names a live pid.
-if [ "$1" = "create" ] && [ -n "${FAKE_LOCK_WATCH:-}" ]; then
+if [ "$verb" = "create" ] && [ -n "${FAKE_LOCK_WATCH:-}" ]; then
     p=$(cat "$FAKE_LOCK_WATCH" 2>/dev/null)
     if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo live; else echo "none:$p"; fi > "$FAKE_LOCK_WATCH.seen"
 fi
 # create makes the container, the one side effect cs relies on.
-if [ "$1" = "create" ]; then eval "last=\${$#}"; mkdir -p "$last"; fi
+if [ "$verb" = "create" ]; then eval "last=\${$#}"; mkdir -p "$last"; fi
 # Make the content move fail only after encryption has acquired its lease.
-if [ "$1" = "create" ] && [ -n "${FAKE_READONLY_LOCAL:-}" ]; then chmod 555 "$FAKE_READONLY_LOCAL"; fi
-# With $FAKE_MOUNT_FLAG set, attach and detach flip the mount stub's answer.
+if [ "$verb" = "create" ] && [ -n "${FAKE_READONLY_LOCAL:-}" ]; then chmod 555 "$FAKE_READONLY_LOCAL"; fi
+# With $FAKE_MOUNT_FLAG set, attach and eject flip the mount stub's answer.
 if [ -n "${FAKE_MOUNT_FLAG:-}" ]; then
-    [ "$1" = "attach" ] && : > "$FAKE_MOUNT_FLAG"
-    [ "$1" = "detach" ] && rm -f "$FAKE_MOUNT_FLAG"
+    [ "$verb" = "attach" ] && : > "$FAKE_MOUNT_FLAG"
+    [ "$verb" = "eject" ] && rm -f "$FAKE_MOUNT_FLAG"
 fi
+# The real attach prints its device table, and the real eject a line.
+if [ "$verb" = "attach" ]; then printf '/dev/disk9s1\tApple_APFS_Volume\t/stub/mount\n'; fi
+if [ "$verb" = "eject" ]; then echo "Disk ejected"; fi
 exit 0
 EOF
-    chmod +x "$d/uname" "$d/hdiutil"
+    chmod +x "$d/uname" "$d/diskutil"
     export PATH="$d:$PATH"
-    export FAKE_HDIUTIL_LOG="$TEST_TMPDIR/hdiutil.log"
-    : > "$FAKE_HDIUTIL_LOG"
+    export FAKE_DISKUTIL_LOG="$TEST_TMPDIR/diskutil.log"
+    : > "$FAKE_DISKUTIL_LOG"
+    : > "$FAKE_DISKUTIL_LOG.stdin"
 }
 
-_encrypt() {  # name -> runs cs -encrypt as a human at a terminal would
-    CS_ASSUME_TTY=1 "$CS_BIN" -encrypt "$@" </dev/null
+# The line a human types at a vault password prompt.
+VAULT_PW_LINE='vault pw
+'
+
+_encrypt() {  # name -> runs cs -encrypt as a human at a terminal would, typing the new password twice
+    printf '%s%s' "$VAULT_PW_LINE" "$VAULT_PW_LINE" | CS_ASSUME_TTY=1 "$CS_BIN" -encrypt "$@"
 }
 
 _vault_path() {  # name
     printf '%s/vaults/%s.sparsebundle' "${CS_DATA_DIR:-$HOME/.local/share/cs}" "$1"
 }
 
-# A refusal writes nothing: no hdiutil call, no vault links, no pre-open.
+# A refusal writes nothing: no diskutil call, no vault links, no pre-open.
 _assert_nothing_written() {  # name
     local s="$CS_SESSIONS_ROOT/$1/.cs"
-    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "hdiutil never called" || return 1
+    assert_eq "" "$(cat "$FAKE_DISKUTIL_LOG")" "diskutil never called" || return 1
     local l
     for l in memory plans claude-config private; do
         [ ! -L "$s/$l" ] || { echo "  FAIL: .cs/$l became a link"; return 1; }
@@ -75,7 +100,7 @@ test_encrypt_refuses_off_macos() {
     local out rc=0
     out=$(FAKE_UNAME=Linux _encrypt enc 2>&1) || rc=$?
     assert_eq "1" "$rc" "non-zero exit" || return 1
-    assert_output_contains "$out" "cs -encrypt needs macOS (hdiutil); Linux is not supported yet." "names the platform" || return 1
+    assert_output_contains "$out" "cs -encrypt needs macOS (diskutil); Linux is not supported yet." "names the platform" || return 1
     _assert_nothing_written enc || return 1
 }
 
@@ -108,7 +133,7 @@ test_encrypt_refuses_an_unknown_session() {
     out=$(_encrypt ghost-town 2>&1) || rc=$?
     assert_eq "1" "$rc" "non-zero exit" || return 1
     assert_output_contains "$out" "No such session: ghost-town" "names the missing session" || return 1
-    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "hdiutil never called" || return 1
+    assert_eq "" "$(cat "$FAKE_DISKUTIL_LOG")" "diskutil never called" || return 1
 }
 
 test_encrypt_refuses_an_adopted_session() {
@@ -119,7 +144,7 @@ test_encrypt_refuses_an_adopted_session() {
     out=$(_encrypt adopted 2>&1) || rc=$?
     assert_eq "1" "$rc" "non-zero exit" || return 1
     assert_output_contains "$out" "adopted: an adopted session cannot be encrypted" "names the adopted session" || return 1
-    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "hdiutil never called" || return 1
+    assert_eq "" "$(cat "$FAKE_DISKUTIL_LOG")" "diskutil never called" || return 1
 }
 
 test_encrypt_refuses_a_feature_worktree_name() {
@@ -128,7 +153,7 @@ test_encrypt_refuses_a_feature_worktree_name() {
     out=$(_encrypt enc@task 2>&1) || rc=$?
     assert_eq "1" "$rc" "non-zero exit" || return 1
     assert_output_contains "$out" "enc@task: encrypt the base session, not a feature worktree" "names the worktree" || return 1
-    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "hdiutil never called" || return 1
+    assert_eq "" "$(cat "$FAKE_DISKUTIL_LOG")" "diskutil never called" || return 1
 }
 
 test_encrypt_refuses_when_any_vault_link_exists() {
@@ -143,7 +168,7 @@ test_encrypt_refuses_when_any_vault_link_exists() {
         out=$(_encrypt enc 2>&1) || rc=$?
         assert_eq "1" "$rc" "non-zero exit with .cs/$l linked" || return 1
         assert_output_contains "$out" "enc: .cs/$l is already a link; the session is encrypted, or half set up by hand." "names .cs/$l" || return 1
-        assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "hdiutil never called ($l)" || return 1
+        assert_eq "" "$(cat "$FAKE_DISKUTIL_LOG")" "diskutil never called ($l)" || return 1
     done
 }
 
@@ -155,7 +180,7 @@ test_encrypt_refuses_a_real_claude_config_or_private() {
     for l in claude-config private; do
         for kind in dir file; do
             rm -rf "${CS_SESSIONS_ROOT:?}/enc" "$(_vault_path enc)"
-            : > "$FAKE_HDIUTIL_LOG"
+            : > "$FAKE_DISKUTIL_LOG"
             _populated_session enc
             if [ "$kind" = dir ]; then
                 mkdir -p "$CS_SESSIONS_ROOT/enc/.cs/$l"
@@ -181,7 +206,7 @@ test_encrypt_refuses_an_existing_pre_open() {
     assert_eq "1" "$rc" "non-zero exit" || return 1
     assert_output_contains "$out" "enc: .cs/local/pre-open already exists; cs -encrypt writes its own. Move yours aside first." "names the hook" || return 1
     assert_eq "$before" "$(cat "$CS_SESSIONS_ROOT/enc/.cs/local/pre-open")" "pre-open unchanged" || return 1
-    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "hdiutil never called" || return 1
+    assert_eq "" "$(cat "$FAKE_DISKUTIL_LOG")" "diskutil never called" || return 1
 }
 
 test_encrypt_refuses_an_existing_container() {
@@ -192,7 +217,7 @@ test_encrypt_refuses_an_existing_container() {
     out=$(_encrypt enc 2>&1) || rc=$?
     assert_eq "1" "$rc" "non-zero exit" || return 1
     assert_output_contains "$out" "enc: $(_vault_path enc) already exists; cs -encrypt will not reuse or overwrite it." "names the container" || return 1
-    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "hdiutil never called" || return 1
+    assert_eq "" "$(cat "$FAKE_DISKUTIL_LOG")" "diskutil never called" || return 1
 }
 
 # The code-sessions profile points CS_DATA_DIR into its own tree; the refusal looks there.
@@ -206,7 +231,7 @@ test_encrypt_refuses_an_existing_container_under_cs_data_dir() {
     out=$(_encrypt enc 2>&1) || rc=$?
     assert_eq "1" "$rc" "non-zero exit" || return 1
     assert_output_contains "$out" "enc: $CS_DATA_DIR/vaults/enc.sparsebundle already exists; cs -encrypt will not reuse or overwrite it." "names the container under CS_DATA_DIR" || return 1
-    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "hdiutil never called" || return 1
+    assert_eq "" "$(cat "$FAKE_DISKUTIL_LOG")" "diskutil never called" || return 1
 }
 
 # pre-open records the container's path and attaches it from the session
@@ -242,7 +267,10 @@ _populated_session() {  # name
 test_encrypt_builds_the_vault_and_detaches() {
     _stubs
     _populated_session enc
-    local s="$CS_SESSIONS_ROOT/enc/.cs" out rc=0
+    local s="$CS_SESSIONS_ROOT/enc/.cs" out rc=0 proj
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$CS_SESSIONS_ROOT/enc")"
+    mkdir -p "$proj"
+    echo "conversation" > "$proj/44444444-4444-4444-8444-444444444444.jsonl"
     out=$(_encrypt enc 2>&1) || rc=$?
     assert_eq "0" "$rc" "exit 0 (output: $out)" || return 1
     local v="$s/vault-mnt" l
@@ -270,14 +298,53 @@ test_encrypt_builds_the_vault_and_detaches() {
     assert_eq "$(_vault_path enc)" "$(cat "$s/local/vault")" ".cs/local/vault names the container" || return 1
     assert_file_contains "$s/README.md" "^tags: \[encrypted\]$" "tagged encrypted" || return 1
     local c; c=$(_vault_path enc)
-    assert_eq "create -size 50g -type SPARSEBUNDLE -fs APFS -encryption AES-256 -volname cs-enc $c
-attach -nobrowse -mountpoint $s/vault-mnt $c
-detach $s/vault-mnt" "$(cat "$FAKE_HDIUTIL_LOG")" "create, attach, then detach" || return 1
+    assert_eq "image create blank --encrypt --stdinpassphrase --format UDSB --size 50g --volumeName cs-enc --fs APFS $c
+image attach --stdinpassphrase --nobrowse --mountPoint $s/vault-mnt $c
+eject $s/vault-mnt" "$(cat "$FAKE_DISKUTIL_LOG")" "create, attach, then eject" || return 1
+    assert_eq "vault pw [8 bytes]
+vault pw [8 bytes]" "$(cat "$FAKE_DISKUTIL_LOG.stdin")" "the password typed once reaches create and attach on stdin, with no newline" || return 1
+    assert_eq "conversation" "$(cat "$v/claude-config/projects/${proj##*/}/44444444-4444-4444-8444-444444444444.jsonl" 2>/dev/null)" \
+        "the conversation moved to where the encrypted session's claude reads it" || return 1
+    [ ! -e "$proj" ] || { echo "  FAIL: plaintext transcripts left at $proj"; return 1; }
+    assert_output_contains "$out" "enc  new vault" "cs names the session and what it is making" || return 1
+    assert_output_contains "$out" "    password › " "cs asks for the new password" || return 1
+    assert_output_contains "$out" "    again › " "and asks for it again" || return 1
     # shellcheck disable=SC2088  # cs prints the literal ~ path
-    assert_output_contains "$out" "~/.claude/history.jsonl" "lists copies it could not move" || return 1
+    assert_output_contains "$out" "  - this session's lines in ~/.claude/history.jsonl" "lists what stays in plaintext" || return 1
+    assert_output_not_contains "$out" "this session's transcripts in" "the transcripts are not on that list: they moved" || return 1
+    assert_output_not_contains "$out" "  - this session's conversations: " "nor are its conversations, under any name" || return 1
+    assert_output_not_contains "$out" "  - what cs could not remove" "and nothing was left behind" || return 1
+    assert_output_not_contains "$out" "Apple_APFS_Volume" "diskutil's device table is not shown" || return 1
+    assert_output_not_contains "$out" "Disk ejected" "nor its eject line" || return 1
     assert_output_contains "$out" "its Codex conversations in $HOME/.codex: rollouts under sessions/" \
         "names Codex's copies too" || return 1
     assert_output_contains "$out" "Codex keeps them in the vault, under .cs/private/codex-home" || return 1
+}
+
+# A vault launch inherits the default keychain selector, but its next
+# session's plaintext transcripts still belong to the code-sessions profile.
+test_encrypt_moves_claude_transcripts_from_the_fork_profile() {
+    _stubs
+    _populated_session enc
+    local profile="$TEST_TMPDIR/profile" project plain original out
+    local id=44444444-4444-4444-8444-444444444444
+    project=$(_encode_cwd_for_claude_test "$CS_SESSIONS_ROOT/enc")
+    plain="$profile/.claude/projects/$project"
+    original="$HOME/.claude/projects/$project"
+    mkdir -p "$plain" "$original"
+    echo "profile transcript" > "$plain/$id.jsonl"
+    echo "original transcript" > "$original/$id.jsonl"
+
+    out=$(
+        unset CS_TRANSCRIPTS_DIR
+        CODE_SESSIONS_HOME="$profile" CLAUDE_SECURESTORAGE_CONFIG_DIR="" \
+            CLAUDE_CONFIG_DIR="$TEST_TMPDIR/other/.cs/claude-config" _encrypt enc 2>&1
+    ) || { printf '%s\n' "$out"; return 1; }
+
+    local vault="$CS_SESSIONS_ROOT/enc/.cs/claude-config/projects/$project"
+    assert_eq "profile transcript" "$(cat "$vault/$id.jsonl")" "moves the fork profile's transcript" || return 1
+    assert_not_exists "$plain/$id.jsonl" "the fork copy moved" || return 1
+    assert_eq "original transcript" "$(cat "$original/$id.jsonl")" "the original profile keeps its transcript" || return 1
 }
 
 # Run from a shell that inherited another encrypted session's launch, the list
@@ -391,7 +458,7 @@ EOF
         mkdir -p "$AGY_ENCRYPT_CACHE_PARENT" || exit 1
         run_cache=$(mktemp -d "$AGY_ENCRYPT_CACHE_PARENT/cs-agy-encrypt-test.XXXXXX") || exit 1
         trap 'rm -rf -- "$run_cache"' EXIT
-        printf 'y' | CS_ASSUME_TTY=1 CS_CACHE_DIR="$run_cache" AGY_BIN="$TEST_TMPDIR/stub/agy" AGY_TEST_ARGS="$args" "$CS_BIN" enc 2>&1
+        printf '%sy\n' "$VAULT_PW_LINE" | CS_ASSUME_TTY=1 CS_CACHE_DIR="$run_cache" AGY_BIN="$TEST_TMPDIR/stub/agy" AGY_TEST_ARGS="$args" "$CS_BIN" enc 2>&1
     ) \
         || { printf '%s\n' "$output"; return 1; }
     assert_file_exists "$args" "agy started" || return 1
@@ -491,6 +558,25 @@ EOF
     _assert_nothing_written enc || return 1
 }
 
+# A conversations folder that is a link is left where it is: moving the link
+# would move no conversation. The closing list then names it, since what it
+# points to stays outside the vault in plain text.
+test_encrypt_names_a_linked_conversations_folder_it_leaves() {
+    _stubs
+    _populated_session enc
+    local proj real out rc=0
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$CS_SESSIONS_ROOT/enc")"
+    real="$TEST_TMPDIR/kept-elsewhere"
+    mkdir -p "$real"
+    echo "conversation" > "$real/44444444-4444-4444-8444-444444444444.jsonl"
+    ln -s "$real" "$proj"
+    out=$(_encrypt enc 2>&1) || rc=$?
+    assert_eq "0" "$rc" "exit 0 (output: $out)" || return 1
+    assert_eq "$real" "$(readlink "$proj")" "the link is left as it was" || return 1
+    assert_eq "conversation" "$(cat "$real/44444444-4444-4444-8444-444444444444.jsonl")" "the conversation stays where the link points" || return 1
+    assert_output_contains "$out" "  - this session's conversations: $proj is a link, so cs left it, and the folder it points to, outside the vault" "the closing list names the linked folder" || return 1
+}
+
 # A session cloned or synced here and never opened has no .cs/local: it is
 # gitignored and born on the first open, and the pre-open hook lives in it.
 test_encrypt_builds_a_session_never_opened_on_this_machine() {
@@ -521,8 +607,31 @@ test_encrypt_builds_the_container_under_cs_data_dir() {
     assert_dir "$c" "the container is made under CS_DATA_DIR" || return 1
     assert_eq "$c" "$(cat "$s/local/vault")" ".cs/local/vault names it" || return 1
     assert_file_contains "$s/local/pre-open" "^container=$c$" "pre-open attaches it" || return 1
-    assert_output_contains "$(cat "$FAKE_HDIUTIL_LOG")" "-volname cs-enc $c" "hdiutil creates it there" || return 1
+    assert_output_contains "$(cat "$FAKE_DISKUTIL_LOG")" "--volumeName cs-enc --fs APFS $c" "diskutil creates it there" || return 1
     assert_eq "" "$(ls -A "$stable")" "stable cs's container is untouched" || return 1
+}
+
+# cs -encrypt reads the terminal's theme before it draws its rows, as an open
+# does: on a light terminal the new vault row takes the light palette's amber.
+# Output goes to a pty, so cs draws in colour; the passwords come down a pipe,
+# so no terminal query reads them, and COLORFGBG names the light background.
+test_encrypt_prompt_follows_a_light_terminal() {
+    _stubs
+    _populated_session enc
+    local run="$TEST_TMPDIR/encrypt-on-a-light-terminal" out light_amber
+    cat > "$run" <<EOF
+#!/bin/sh
+printf '%s%s' '$VAULT_PW_LINE' '$VAULT_PW_LINE' | COLORFGBG='0;15' CS_ASSUME_TTY=1 '$CS_BIN' -encrypt enc
+EOF
+    chmod +x "$run"
+    light_amber=$(printf '\033[38;2;162;122;58m')
+    out=$(_pty_run "$run" 2>&1) || true
+    # Matched as text: assert_output_contains reads a regex, where the
+    # colour's [ opens a bracket expression.
+    case "$out" in
+        *"${light_amber}new vault"*) ;;
+        *) echo "  FAIL: the new vault row is not drawn in the light palette (output: $out)"; return 1 ;;
+    esac
 }
 
 # An open while cs -encrypt asks for passwords would race its moves; the
@@ -533,7 +642,7 @@ test_encrypt_holds_the_session_lock_while_it_works() {
     local lock="$CS_SESSIONS_ROOT/enc/.cs/session.lock" rc=0
     FAKE_LOCK_WATCH="$lock" _encrypt enc >/dev/null 2>&1 || rc=$?
     assert_eq "0" "$rc" "encrypt succeeds" || return 1
-    assert_eq "live" "$(cat "$lock.seen" 2>/dev/null)" "a live lock while hdiutil runs" || return 1
+    assert_eq "live" "$(cat "$lock.seen" 2>/dev/null)" "a live lock while diskutil runs" || return 1
     [ ! -e "$lock" ] || { echo "  FAIL: lock left after encrypt: $(cat "$lock")"; return 1; }
 }
 
@@ -541,7 +650,7 @@ test_encrypt_releases_the_session_lock_when_it_stops() {
     _stubs
     _populated_session enc
     local lock="$CS_SESSIONS_ROOT/enc/.cs/session.lock" rc=0
-    FAKE_HDIUTIL_FAIL=attach _encrypt enc >/dev/null 2>&1 || rc=$?
+    FAKE_DISKUTIL_FAIL=attach _encrypt enc >/dev/null 2>&1 || rc=$?
     assert_eq "1" "$rc" "encrypt stops" || return 1
     [ ! -e "$lock" ] || { echo "  FAIL: lock left after a failed encrypt: $(cat "$lock")"; return 1; }
 }
@@ -554,7 +663,7 @@ test_encrypt_releases_the_lock_under_a_root_with_quotes() {
     mkdir -p "$CS_SESSIONS_ROOT"
     _populated_session enc
     local lock="$CS_SESSIONS_ROOT/enc/.cs/session.lock" rc=0
-    (cd "$TEST_TMPDIR" && FAKE_HDIUTIL_FAIL=attach _encrypt enc >/dev/null 2>&1) || rc=$?
+    (cd "$TEST_TMPDIR" && FAKE_DISKUTIL_FAIL=attach _encrypt enc >/dev/null 2>&1) || rc=$?
     assert_eq "1" "$rc" "encrypt stops" || return 1
     [ ! -e "$lock" ] || { echo "  FAIL: lock left after a failed encrypt: $(cat "$lock")"; return 1; }
     [ ! -e "$TEST_TMPDIR/pwned" ] || { echo "  FAIL: the root's \$( ran as code"; return 1; }
@@ -614,7 +723,7 @@ SHIM
     assert_eq "1" "$rc" "cs -encrypt refuses" || return 1
     assert_eq "Error: enc: the session is live; close it, then encrypt." "$(cat "$out")" \
         "cs -encrypt names the running session" || return 1
-    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "hdiutil never called" || return 1
+    assert_eq "" "$(cat "$FAKE_DISKUTIL_LOG")" "diskutil never called" || return 1
     assert_eq "$pid_open" "$lock_now" "the open still holds the session lock" || return 1
 }
 
@@ -657,13 +766,58 @@ test_encrypt_refuses_a_readme_it_cannot_tag() {
     _assert_nothing_written enc || return 1
 }
 
+# The conversations move after everything under .cs/. When that move fails
+# the vault stays mounted, since it may hold the only whole copy, the message
+# names what has moved, and the session is not linked into the vault.
+# Once the vault holds whole copies, what cs cannot remove outside it is no
+# reason to stop: cs -encrypt names what is left in plain text and goes on.
+test_encrypt_names_what_it_could_not_remove_outside_the_vault() {
+    [ "$(id -u)" != "0" ] || { echo "  SKIP: root ignores the permission that makes the removal fail"; return 77; }
+    _stubs
+    _populated_session enc
+    local s="$CS_SESSIONS_ROOT/enc/.cs" id=44444444-4444-4444-8444-444444444444 out rc=0 proj c
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$CS_SESSIONS_ROOT/enc")"
+    mkdir -p "$proj"
+    echo "conversation" > "$proj/$id.jsonl"
+    chmod 555 "$CS_TRANSCRIPTS_DIR"
+    out=$(_encrypt enc 2>&1) || rc=$?
+    chmod 755 "$CS_TRANSCRIPTS_DIR"
+    c=$(_vault_path enc)
+    assert_eq "0" "$rc" "cs -encrypt goes on: $out" || return 1
+    assert_eq "conversation" "$(cat "$s/vault-mnt/claude-config/projects/${proj##*/}/$id.jsonl" 2>/dev/null)" "the vault holds the whole conversation" || return 1
+    assert_output_contains "$out" "enc: the vault holds whole copies of this session's conversations, but cs could not remove them all from outside it. What is left in $proj is in plain text; remove it by hand. Removing it failed with: rmdir: " "names what is left outside" || return 1
+    assert_output_contains "$out" "^  - what cs could not remove from $proj: the vault holds whole copies of this session's conversations, and what is left there is a copy in plain text$" "the closing list names what is left" || return 1
+    [ -L "$s/memory" ] || { echo "  FAIL: the session was not linked into the vault"; return 1; }
+    assert_eq "image create blank --encrypt --stdinpassphrase --format UDSB --size 50g --volumeName cs-enc --fs APFS $c
+image attach --stdinpassphrase --nobrowse --mountPoint $s/vault-mnt $c
+eject $s/vault-mnt" "$(cat "$FAKE_DISKUTIL_LOG")" "the vault is built and detached" || return 1
+}
+
+
+# The new password is typed twice before anything is made: two that differ,
+# or none, stop with the session as it was.
+test_encrypt_refuses_passwords_that_differ_or_are_empty() {
+    _stubs
+    _populated_session enc
+    local out rc=0
+    out=$(printf 'one\ntwo\n' | CS_ASSUME_TTY=1 "$CS_BIN" -encrypt enc 2>&1) || rc=$?
+    assert_eq "1" "$rc" "non-zero exit for two that differ" || return 1
+    assert_output_contains "$out" "enc: the two passwords differ; the session is unchanged." "says they differ" || return 1
+    _assert_nothing_written enc || return 1
+    rc=0
+    out=$(printf '\n\n' | CS_ASSUME_TTY=1 "$CS_BIN" -encrypt enc 2>&1) || rc=$?
+    assert_eq "1" "$rc" "non-zero exit for none" || return 1
+    assert_output_contains "$out" "enc: no password entered; the session is unchanged." "says none was entered" || return 1
+    _assert_nothing_written enc || return 1
+}
+
 test_encrypt_stops_when_create_fails() {
     _stubs
     _populated_session enc
     local s="$CS_SESSIONS_ROOT/enc/.cs" out rc=0
-    out=$(FAKE_HDIUTIL_FAIL=create _encrypt enc 2>&1) || rc=$?
+    out=$(FAKE_DISKUTIL_FAIL=create _encrypt enc 2>&1) || rc=$?
     assert_eq "1" "$rc" "non-zero exit" || return 1
-    assert_output_contains "$out" "enc: hdiutil create failed; the session is unchanged." "says nothing changed" || return 1
+    assert_output_contains "$out" "enc: diskutil could not create the vault; the session is unchanged. diskutil said: diskutil: create failed - stub" "says nothing changed, and what diskutil said" || return 1
     assert_eq "narrative" "$(cat "$s/memory/narrative.alice.md")" "memory untouched" || return 1
     [ ! -L "$s/memory" ] && [ ! -e "$s/local/pre-open" ] || { echo "  FAIL: session changed"; return 1; }
 }
@@ -672,9 +826,9 @@ test_encrypt_stops_when_attach_fails() {
     _stubs
     _populated_session enc
     local s="$CS_SESSIONS_ROOT/enc/.cs" out rc=0
-    out=$(FAKE_HDIUTIL_FAIL=attach _encrypt enc 2>&1) || rc=$?
+    out=$(FAKE_DISKUTIL_FAIL=attach _encrypt enc 2>&1) || rc=$?
     assert_eq "1" "$rc" "non-zero exit" || return 1
-    assert_output_contains "$out" "enc: hdiutil could not attach $(_vault_path enc); the session is unchanged. Delete the container before retrying." "names the container" || return 1
+    assert_output_contains "$out" "enc: diskutil could not attach $(_vault_path enc); the session is unchanged. Delete the container before retrying. diskutil said: diskutil: attach failed - stub" "names the container, and what diskutil said" || return 1
     assert_eq "narrative" "$(cat "$s/memory/narrative.alice.md")" "memory untouched" || return 1
     [ ! -L "$s/memory" ] && [ ! -e "$s/local/pre-open" ] || { echo "  FAIL: session changed"; return 1; }
 }
@@ -697,7 +851,7 @@ test_encrypt_stops_on_a_failed_move_and_names_what_moved() {
 
 # pre-open runs from the session directory before every open. `mount` is a
 # stub that reports the vault mounted when FAKE_MOUNTED=1.
-_encrypted_session() {  # name -> leaves an encrypted session and a clean hdiutil log
+_encrypted_session() {  # name -> leaves an encrypted session and clean diskutil logs
     _stubs
     _populated_session "$1"
     _encrypt "$1" >/dev/null 2>&1 || { echo "  FAIL: fixture encrypt failed"; return 1; }
@@ -709,12 +863,13 @@ EOF
     chmod +x "$TEST_TMPDIR/stub/mount"
     FAKE_MNT=$(cd "$CS_SESSIONS_ROOT/$1/.cs/vault-mnt" && pwd -P)
     export FAKE_MNT
-    : > "$FAKE_HDIUTIL_LOG"
+    : > "$FAKE_DISKUTIL_LOG"
+    : > "$FAKE_DISKUTIL_LOG.stdin"
 }
 
-_pre_open() {  # name [env...] -> runs the hook from the session directory, as _run_pre_open does; cs's CS_LIVE_LOCK_PID goes in env
+_pre_open() {  # name [env...] -> runs the hook from the session directory, as _run_pre_open does, with the password typed; cs's CS_LIVE_LOCK_PID goes in env
     local name="$1"; shift
-    (cd "$CS_SESSIONS_ROOT/$name" && env "$@" .cs/local/pre-open </dev/null)
+    (cd "$CS_SESSIONS_ROOT/$name" && printf '%s' "$VAULT_PW_LINE" | env "$@" .cs/local/pre-open)
 }
 
 test_pre_open_joins_a_mount_held_by_a_running_session() {
@@ -725,7 +880,7 @@ test_pre_open_joins_a_mount_held_by_a_running_session() {
     _pre_open enc FAKE_MOUNTED=1 CS_LIVE_LOCK_PID="$live" >/dev/null 2>&1 || rc=$?
     kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
     assert_eq "0" "$rc" "exit 0" || return 1
-    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "no prompt, no hdiutil call" || return 1
+    assert_eq "" "$(cat "$FAKE_DISKUTIL_LOG")" "no prompt, no diskutil call" || return 1
 }
 
 # The pre-open takes cs's reading of the session lock from CS_LIVE_LOCK_PID
@@ -740,8 +895,8 @@ test_pre_open_without_the_lock_pid_detaches_and_asks_again() {
     _pre_open enc -u CS_LIVE_LOCK_PID FAKE_MOUNTED=1 CS_ASSUME_TTY=1 >/dev/null 2>&1 || rc=$?
     kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
     assert_eq "0" "$rc" "exit 0" || return 1
-    assert_eq "detach $FAKE_MNT
-attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)" "$(cat "$FAKE_HDIUTIL_LOG")" "detach, then a prompting attach" || return 1
+    assert_eq "eject $FAKE_MNT
+image attach --stdinpassphrase --nobrowse --mountPoint $FAKE_MNT $(_vault_path enc)" "$(cat "$FAKE_DISKUTIL_LOG")" "detach, then a prompting attach" || return 1
 }
 
 # A CS_LIVE_LOCK_PID that names no running process (a dead pid, or 0 and 00,
@@ -754,12 +909,12 @@ test_pre_open_with_a_lock_pid_that_is_not_running_detaches_and_asks_again() {
     local dead=$! value rc
     kill "$dead" 2>/dev/null; wait "$dead" 2>/dev/null
     for value in "$dead" 0 00; do
-        : > "$FAKE_HDIUTIL_LOG"
+        : > "$FAKE_DISKUTIL_LOG"
         rc=0
         _pre_open enc FAKE_MOUNTED=1 CS_ASSUME_TTY=1 CS_LIVE_LOCK_PID="$value" >/dev/null 2>&1 || rc=$?
         assert_eq "0" "$rc" "exit 0 with CS_LIVE_LOCK_PID=$value" || return 1
-        assert_eq "detach $FAKE_MNT
-attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)" "$(cat "$FAKE_HDIUTIL_LOG")" "CS_LIVE_LOCK_PID=$value: detach, then a prompting attach" || return 1
+        assert_eq "eject $FAKE_MNT
+image attach --stdinpassphrase --nobrowse --mountPoint $FAKE_MNT $(_vault_path enc)" "$(cat "$FAKE_DISKUTIL_LOG")" "CS_LIVE_LOCK_PID=$value: detach, then a prompting attach" || return 1
     done
 }
 
@@ -772,7 +927,7 @@ test_pre_open_joins_a_mount_whose_holder_is_alive_without_a_lock() {
     _pre_open enc FAKE_MOUNTED=1 CS_ASSUME_TTY=1 >/dev/null 2>&1 || rc=$?
     kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
     assert_eq "0" "$rc" "exit 0" || return 1
-    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "joined: no detach, no prompt" || return 1
+    assert_eq "" "$(cat "$FAKE_DISKUTIL_LOG")" "joined: no detach, no prompt" || return 1
 }
 
 # A reopen that kills the waiter must also stop the detach the waiter started,
@@ -782,7 +937,7 @@ test_pre_open_stops_a_waiter_detach_in_flight() {
     sleep 0.1 &
     local claude=$!
     wait "$claude" 2>/dev/null
-    FAKE_HDIUTIL_HOLD=detach _end_conversation enc prompt_input_exit "$claude" "$claude"
+    FAKE_DISKUTIL_HOLD=eject _end_conversation enc prompt_input_exit "$claude" "$claude"
     local f="$CS_SESSIONS_ROOT/enc/.cs/local/vault-detach.pid"
     # The detached waiter records its detach child later on a loaded machine.
     wait_until test -s "$f"
@@ -795,9 +950,9 @@ test_pre_open_stops_a_waiter_detach_in_flight() {
     kill -0 "$detach" 2>/dev/null && alive=1
     assert_eq "0" "$rc" "reopen asks again" || return 1
     assert_eq "0" "$alive" "the waiter's detach is stopped when the reopen returns" || return 1
-    assert_eq "detach $FAKE_MNT
-detach $FAKE_MNT
-attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)" "$(cat "$FAKE_HDIUTIL_LOG")" "the waiter's detach never finished" || return 1
+    assert_eq "eject $FAKE_MNT
+eject $FAKE_MNT
+image attach --stdinpassphrase --nobrowse --mountPoint $FAKE_MNT $(_vault_path enc)" "$(cat "$FAKE_DISKUTIL_LOG")" "the waiter's detach never finished" || return 1
 }
 
 test_pre_open_detaches_a_leftover_mount_and_asks_again() {
@@ -812,17 +967,17 @@ test_pre_open_detaches_a_leftover_mount_and_asks_again() {
     assert_eq "0" "$rc" "exit 0" || return 1
     assert_eq "0" "$alive" "the old waiter is killed" || return 1
     [ ! -e "$CS_SESSIONS_ROOT/enc/.cs/local/vault-waiter.pid" ] || { echo "  FAIL: waiter pid file left"; return 1; }
-    assert_eq "detach $FAKE_MNT
-attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)" "$(cat "$FAKE_HDIUTIL_LOG")" "detach, then a prompting attach" || return 1
+    assert_eq "eject $FAKE_MNT
+image attach --stdinpassphrase --nobrowse --mountPoint $FAKE_MNT $(_vault_path enc)" "$(cat "$FAKE_DISKUTIL_LOG")" "detach, then a prompting attach" || return 1
 }
 
 test_pre_open_refuses_a_leftover_mount_that_will_not_detach() {
     _encrypted_session enc || return 1
     local out rc=0
-    out=$(_pre_open enc FAKE_MOUNTED=1 CS_ASSUME_TTY=1 FAKE_HDIUTIL_FAIL=detach 2>&1) || rc=$?
+    out=$(_pre_open enc FAKE_MOUNTED=1 CS_ASSUME_TTY=1 FAKE_DISKUTIL_FAIL=eject 2>&1) || rc=$?
     assert_eq "1" "$rc" "non-zero exit" || return 1
-    assert_output_contains "$out" "run: hdiutil detach $FAKE_MNT" "names the command" || return 1
-    assert_eq "detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "never attaches silently" || return 1
+    assert_output_contains "$out" "run: diskutil eject $FAKE_MNT" "names the command" || return 1
+    assert_eq "eject $FAKE_MNT" "$(cat "$FAKE_DISKUTIL_LOG")" "never attaches silently" || return 1
 }
 
 test_pre_open_refuses_without_a_terminal() {
@@ -831,7 +986,7 @@ test_pre_open_refuses_without_a_terminal() {
     out=$(_pre_open enc 2>&1) || rc=$?
     assert_eq "1" "$rc" "non-zero exit" || return 1
     assert_output_contains "$out" "cs: this session is encrypted and needs a terminal to ask for the vault password." "says why" || return 1
-    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "no hdiutil call, so no dialog" || return 1
+    assert_eq "" "$(cat "$FAKE_DISKUTIL_LOG")" "no diskutil call, so no dialog" || return 1
 }
 
 test_pre_open_attaches_with_a_prompt() {
@@ -839,7 +994,97 @@ test_pre_open_attaches_with_a_prompt() {
     local rc=0
     _pre_open enc CS_ASSUME_TTY=1 >/dev/null 2>&1 || rc=$?
     assert_eq "0" "$rc" "exit 0" || return 1
-    assert_eq "attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)" "$(cat "$FAKE_HDIUTIL_LOG")" "one attach, no -stdinpass" || return 1
+    assert_eq "image attach --stdinpassphrase --nobrowse --mountPoint $FAKE_MNT $(_vault_path enc)" "$(cat "$FAKE_DISKUTIL_LOG")" "one attach, the password on stdin" || return 1
+}
+
+# The hook shows its own prompt and nothing of diskutil's on a good password,
+# and diskutil's error on a bad one.
+test_pre_open_shows_its_prompt_and_only_diskutil_errors() {
+    _encrypted_session enc || return 1
+    local out rc=0
+    out=$(_pre_open enc CS_ASSUME_TTY=1 2>&1) || rc=$?
+    assert_eq "0" "$rc" "exit 0" || return 1
+    assert_eq "Vault password for enc: " "$out" "the prompt, and no device table" || return 1
+    assert_eq "vault pw [8 bytes]" "$(cat "$FAKE_DISKUTIL_LOG.stdin")" "the password reaches attach on stdin, with no newline" || return 1
+    rc=0
+    out=$(_pre_open enc CS_ASSUME_TTY=1 FAKE_DISKUTIL_FAIL=attach 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a refused password stops the open" || return 1
+    assert_eq $'Vault password for enc: \ncs: the vault did not open. diskutil said: diskutil: attach failed - stub' \
+        "$out" "what diskutil said" || return 1
+}
+
+# A wrong password is asked for again, three times at most; anything else
+# diskutil refuses ends the open at once (the test above).
+test_pre_open_asks_again_after_a_wrong_password() {
+    _encrypted_session enc || return 1
+    local out rc=0
+    out=$(cd "$CS_SESSIONS_ROOT/enc" && printf 'nope\n%s' "$VAULT_PW_LINE" | CS_ASSUME_TTY=1 FAKE_DISKUTIL_WRONG=1 .cs/local/pre-open 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the second password opens it" || return 1
+    local prompt='Vault password for enc: ' wrong=$'cs: wrong password.\n'
+    assert_eq "$prompt"$'\n'"$wrong$prompt" "$out" "says it was wrong, asks again" || return 1
+    assert_eq "nope [4 bytes]
+vault pw [8 bytes]" "$(cat "$FAKE_DISKUTIL_LOG.stdin")" "each typed password reaches its own attach" || return 1
+    : > "$FAKE_DISKUTIL_LOG"
+    rc=0
+    out=$(cd "$CS_SESSIONS_ROOT/enc" && printf 'a\nb\nc\nd\n' | CS_ASSUME_TTY=1 FAKE_DISKUTIL_WRONG=9 .cs/local/pre-open 2>&1) || rc=$?
+    assert_eq "1" "$rc" "three wrong passwords stop the open" || return 1
+    local ask_line="$prompt"$'\n'
+    assert_eq "${ask_line}${wrong}${ask_line}${wrong}${ask_line}cs: three wrong passwords; the vault stays locked." \
+        "$out" "three asks, then the reason" || return 1
+    assert_eq "3" "$(grep -c ' attach ' "$FAKE_DISKUTIL_LOG")" "a fourth password is never read" || return 1
+}
+
+# Through cs, the hook draws the rows cs hands it: the session and what the
+# vault is, then the row that takes the password.
+test_open_draws_the_vault_prompt_cs_hands_the_hook() {
+    _encrypted_session enc || return 1
+    echo "plaintext" > "$CS_SESSIONS_ROOT/enc/.cs/local/session.log"
+    local out rc=0
+    out=$(printf 'nope\n%s' "$VAULT_PW_LINE" | FAKE_DISKUTIL_WRONG=1 FAKE_MOUNT_FLAG="$TEST_TMPDIR/mounted" CS_ASSUME_TTY=1 "$CS_BIN" enc 2>&1) || rc=$?
+    assert_eq $'enc  vault locked\n    password › \n    wrong password\n    password › ' \
+        "$(printf '%s\n' "$out" | head -4)" "the session, what the vault is, the ask, the wrong-password row" || return 1
+}
+
+# Ctrl-C at the hook's prompt ends it with 130: cs ends the same way, with
+# no error line of its own.
+test_open_ends_quietly_when_the_pre_open_was_cancelled() {
+    _encrypted_session enc || return 1
+    printf '#!/bin/bash\nexit 130\n' > "$CS_SESSIONS_ROOT/enc/.cs/local/pre-open"
+    local out rc=0
+    out=$(_open enc 2>&1) || rc=$?
+    assert_eq "130" "$rc" "cs exits as a cancelled command does" || return 1
+    assert_eq "" "$out" "and prints nothing" || return 1
+}
+
+# A session an earlier cs encrypted carries the pre-open that cs wrote; the
+# open replaces it with its own before running it. One written by hand has
+# no cs mark on its second line and stays.
+test_open_replaces_a_pre_open_another_cs_wrote() {
+    _encrypted_session enc || return 1
+    local hook="$CS_SESSIONS_ROOT/enc/.cs/local/pre-open" out rc=0
+    printf '#!/bin/bash\n%s\necho ran >> "%s"\n' \
+        "# Written by cs -encrypt: mounts this session vault, asking for its password at every open." \
+        "$TEST_TMPDIR/earlier-hook-ran" > "$hook"
+    out=$(CLAUDE_CODE_BIN="$(_claude_snapshot)" _open enc "$VAULT_PW_LINE" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the open reaches claude: $out" || return 1
+    [ ! -e "$TEST_TMPDIR/earlier-hook-ran" ] || { echo "  FAIL: the earlier hook ran"; return 1; }
+    assert_eq "image --help
+image attach --stdinpassphrase --nobrowse --mountPoint $FAKE_MNT $(_vault_path enc)" "$(cat "$TEST_TMPDIR/during")" "cs checked for the image verbs, then its hook attached the vault" || return 1
+    [ -x "$hook" ] || { echo "  FAIL: the rewritten pre-open is not executable"; return 1; }
+}
+
+# Where diskutil has no image verbs, the hook an earlier cs wrote is the one
+# that still opens the vault, so the open runs it as it is.
+test_open_keeps_an_earlier_pre_open_where_diskutil_has_no_image_verbs() {
+    _encrypted_session enc || return 1
+    local hook="$CS_SESSIONS_ROOT/enc/.cs/local/pre-open" out rc=0
+    printf '#!/bin/bash\n%s\necho ran >> "%s"\n' \
+        "# Written by cs -encrypt: mounts this session vault, asking for its password at every open." \
+        "$TEST_TMPDIR/earlier-hook-ran" > "$hook"
+    out=$(FAKE_DISKUTIL_FAIL=--help CLAUDE_CODE_BIN="$(_claude_snapshot)" _open enc 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the open reaches claude: $out" || return 1
+    assert_eq "ran" "$(cat "$TEST_TMPDIR/earlier-hook-ran" 2>/dev/null)" "the earlier hook ran" || return 1
+    assert_eq "image --help" "$(cat "$FAKE_DISKUTIL_LOG")" "cs asked diskutil for the image verbs and called nothing else" || return 1
 }
 
 # An open attaches the container pre-open recorded; CS_DATA_DIR only places
@@ -851,12 +1096,12 @@ test_pre_open_attaches_the_recorded_container_whatever_cs_data_dir_says() {
     local c="$CS_DATA_DIR/vaults/enc.sparsebundle" rc=0
     _pre_open enc CS_ASSUME_TTY=1 CS_DATA_DIR="$TEST_TMPDIR/elsewhere" >/dev/null 2>&1 || rc=$?
     assert_eq "0" "$rc" "exit 0" || return 1
-    assert_eq "attach -nobrowse -mountpoint $FAKE_MNT $c" "$(cat "$FAKE_HDIUTIL_LOG")" "attaches the recorded container" || return 1
+    assert_eq "image attach --stdinpassphrase --nobrowse --mountPoint $FAKE_MNT $c" "$(cat "$FAKE_DISKUTIL_LOG")" "attaches the recorded container" || return 1
 }
 
 # An open that stops before claude runs detaches the vault its pre-open
 # mounted; a vault a running conversation holds stays mounted.
-_open() {  # name [answers] -> opens the session as a human at a terminal would; the mount stub tracks attach/detach
+_open() {  # name [answers] -> opens the session as a human at a terminal would; an open that mounts the vault reads $VAULT_PW_LINE first; the mount stub tracks attach/eject
     printf '%s' "${2:-}" | FAKE_MOUNT_FLAG="$TEST_TMPDIR/mounted" CS_ASSUME_TTY=1 "$CS_BIN" "$1"
 }
 
@@ -864,11 +1109,11 @@ test_open_that_stops_detaches_the_vault_it_mounted() {
     _encrypted_session enc || return 1
     echo "plaintext" > "$CS_SESSIONS_ROOT/enc/.cs/local/session.log"
     local out rc=0
-    out=$(_open enc 2>&1) || rc=$?
+    out=$(_open enc "$VAULT_PW_LINE" 2>&1) || rc=$?
     assert_eq "1" "$rc" "the open stops" || return 1
     assert_output_contains "$out" "still holds session.log in plaintext" "stops at the plaintext refusal" || return 1
-    assert_eq "attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)
-detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "attach, then detach on the way out" || return 1
+    assert_eq "image attach --stdinpassphrase --nobrowse --mountPoint $FAKE_MNT $(_vault_path enc)
+eject $FAKE_MNT" "$(cat "$FAKE_DISKUTIL_LOG")" "attach, then detach on the way out" || return 1
 }
 
 # A Codex context left in .cs/local is a plaintext copy of memory and the
@@ -877,11 +1122,11 @@ test_open_refuses_a_plaintext_codex_context_beside_the_vault() {
     _encrypted_session enc || return 1
     echo "memory excerpt" > "$CS_SESSIONS_ROOT/enc/.cs/local/codex-instructions.md"
     local out rc=0
-    out=$(_open enc 2>&1) || rc=$?
+    out=$(_open enc "$VAULT_PW_LINE" 2>&1) || rc=$?
     assert_eq "1" "$rc" "the open stops" || return 1
     assert_output_contains "$out" "still holds codex-instructions.md in plaintext" "names the leftover" || return 1
-    assert_eq "attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)
-detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "attach, then detach on the way out" || return 1
+    assert_eq "image attach --stdinpassphrase --nobrowse --mountPoint $FAKE_MNT $(_vault_path enc)
+eject $FAKE_MNT" "$(cat "$FAKE_DISKUTIL_LOG")" "attach, then detach on the way out" || return 1
 }
 
 # So is the temp file an interrupted context write left there.
@@ -889,11 +1134,11 @@ test_open_refuses_a_leftover_codex_context_temp_file_beside_the_vault() {
     _encrypted_session enc || return 1
     echo "memory excerpt" > "$CS_SESSIONS_ROOT/enc/.cs/local/.codex-instructions.AbC123"
     local out rc=0
-    out=$(_open enc 2>&1) || rc=$?
+    out=$(_open enc "$VAULT_PW_LINE" 2>&1) || rc=$?
     assert_eq "1" "$rc" "the open stops" || return 1
     assert_output_contains "$out" "still holds .codex-instructions.AbC123 in plaintext" "names the leftover" || return 1
-    assert_eq "attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)
-detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "attach, then detach on the way out" || return 1
+    assert_eq "image attach --stdinpassphrase --nobrowse --mountPoint $FAKE_MNT $(_vault_path enc)
+eject $FAKE_MNT" "$(cat "$FAKE_DISKUTIL_LOG")" "attach, then detach on the way out" || return 1
 }
 
 # The agent chooses that file's name: an escape sequence in it never reaches
@@ -902,7 +1147,7 @@ test_open_names_a_leftover_with_escapes_in_plain_text() {
     _encrypted_session enc || return 1
     echo "memory excerpt" > "$CS_SESSIONS_ROOT/enc/.cs/local/.codex-instructions."$'\033]0;evil\007'
     local out rc=0
-    out=$(_open enc 2>&1) || rc=$?
+    out=$(_open enc "$VAULT_PW_LINE" 2>&1) || rc=$?
     assert_eq "1" "$rc" "the open stops" || return 1
     assert_output_contains "$out" "still holds \.codex-instructions\.__0_evil_ in plaintext" "names the leftover in plain text" || return 1
     assert_output_not_contains "$out" $'\033' "no escape byte reaches the terminal" || return 1
@@ -919,7 +1164,7 @@ test_open_that_stops_leaves_a_running_session_vault_mounted() {
     _open enc >/dev/null 2>&1 || rc=$?
     kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
     assert_eq "1" "$rc" "the open stops" || return 1
-    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "joined the mount, never detached it" || return 1
+    assert_eq "" "$(cat "$FAKE_DISKUTIL_LOG")" "joined the mount, never detached it" || return 1
 }
 
 # The open's exit reads the lock by live_lock_pid's rule: "-1" and "0" name
@@ -930,15 +1175,15 @@ test_open_that_stops_reads_the_lock_by_the_one_lock_rule() {
     echo "plaintext" > "$CS_SESSIONS_ROOT/enc/.cs/local/session.log"
     local text out rc
     for text in "-1" "0" "+$$"; do
-        : > "$FAKE_HDIUTIL_LOG"
+        : > "$FAKE_DISKUTIL_LOG"
         rm -f "$TEST_TMPDIR/mounted"
         printf '%s\n' "$text" > "$CS_SESSIONS_ROOT/enc/.cs/session.lock"
         rc=0
-        out=$(_open enc 2>&1) || rc=$?
+        out=$(_open enc "$VAULT_PW_LINE" 2>&1) || rc=$?
         assert_eq "1" "$rc" "the open over a lock of '$text' stops: $out" || return 1
         assert_output_contains "$out" "still holds session.log in plaintext" "stops at the plaintext refusal" || return 1
-        assert_eq "attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)
-detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "a lock of '$text' does not keep the vault mounted" || return 1
+        assert_eq "image attach --stdinpassphrase --nobrowse --mountPoint $FAKE_MNT $(_vault_path enc)
+eject $FAKE_MNT" "$(cat "$FAKE_DISKUTIL_LOG")" "a lock of '$text' does not keep the vault mounted" || return 1
     done
 }
 
@@ -950,16 +1195,16 @@ test_open_over_a_mounted_vault_reads_the_lock_by_the_one_lock_rule() {
     echo "plaintext" > "$CS_SESSIONS_ROOT/enc/.cs/local/session.log"
     local text out rc
     for text in "0" "00"; do
-        : > "$FAKE_HDIUTIL_LOG"
+        : > "$FAKE_DISKUTIL_LOG"
         : > "$TEST_TMPDIR/mounted"
         printf '%s\n' "$text" > "$CS_SESSIONS_ROOT/enc/.cs/session.lock"
         rc=0
-        out=$(_open enc 2>&1) || rc=$?
+        out=$(_open enc "$VAULT_PW_LINE" 2>&1) || rc=$?
         assert_eq "1" "$rc" "the open over a lock of '$text' stops: $out" || return 1
         assert_output_contains "$out" "still holds session.log in plaintext" "stops at the plaintext refusal" || return 1
-        assert_eq "detach $FAKE_MNT
-attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)
-detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "a lock of '$text' does not join the mount without the password" || return 1
+        assert_eq "eject $FAKE_MNT
+image attach --stdinpassphrase --nobrowse --mountPoint $FAKE_MNT $(_vault_path enc)
+eject $FAKE_MNT" "$(cat "$FAKE_DISKUTIL_LOG")" "a lock of '$text' does not join the mount without the password" || return 1
     done
 }
 
@@ -975,11 +1220,11 @@ test_open_cancelled_at_a_prompt_detaches_the_vault_it_mounted() {
     _encrypted_session enc || return 1
     _bind_conversation enc
     local out rc=0
-    out=$(_open enc 2>&1) || rc=$?
+    out=$(_open enc "$VAULT_PW_LINE" 2>&1) || rc=$?
     assert_eq "130" "$rc" "no answer to 'Continue previous conversation?' cancels" || return 1
     assert_output_contains "$out" "Continue previous conversation?" "stopped at the prompt" || return 1
-    assert_eq "attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)
-detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "attach, then detach on the way out" || return 1
+    assert_eq "image attach --stdinpassphrase --nobrowse --mountPoint $FAKE_MNT $(_vault_path enc)
+eject $FAKE_MNT" "$(cat "$FAKE_DISKUTIL_LOG")" "attach, then detach on the way out" || return 1
 }
 
 test_open_that_stops_leaves_a_vault_another_holder_keeps() {
@@ -992,7 +1237,7 @@ test_open_that_stops_leaves_a_vault_another_holder_keeps() {
     _open enc >/dev/null 2>&1 || rc=$?
     kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
     assert_eq "1" "$rc" "the open stops" || return 1
-    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "joined the holder's mount, never detached it" || return 1
+    assert_eq "" "$(cat "$FAKE_DISKUTIL_LOG")" "joined the holder's mount, never detached it" || return 1
 }
 
 # The collision menu's session manager replaces this cs with the picker: that
@@ -1014,10 +1259,10 @@ EOF
     assert_eq "absent" "$(cat "$TEST_TMPDIR/tui-saw" 2>/dev/null)" "the picker's process is not a vault holder" || return 1
 }
 
-# A claude that copies the hdiutil log as it stood while it ran.
+# A claude that copies the diskutil log as it stood while it ran.
 _claude_snapshot() {
     local c="$TEST_TMPDIR/claude-snap"
-    printf '#!/bin/sh\ncp "$FAKE_HDIUTIL_LOG" "%s"\nexit 0\n' "$TEST_TMPDIR/during" > "$c"
+    printf '#!/bin/sh\ncp "$FAKE_DISKUTIL_LOG" "%s"\nexit 0\n' "$TEST_TMPDIR/during" > "$c"
     chmod +x "$c"
     printf '%s' "$c"
 }
@@ -1028,12 +1273,12 @@ test_open_resuming_keeps_the_vault_while_claude_runs() {
     _encrypted_session enc || return 1
     _bind_conversation enc
     local out rc=0
-    out=$(CLAUDE_CODE_BIN="$(_claude_snapshot)" _open enc "y
+    out=$(CLAUDE_CODE_BIN="$(_claude_snapshot)" _open enc "${VAULT_PW_LINE}y
 " 2>&1) || rc=$?
     assert_eq "0" "$rc" "the open reaches claude: $out" || return 1
-    assert_eq "attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)" "$(cat "$TEST_TMPDIR/during" 2>/dev/null)" "mounted, no detach while claude runs" || return 1
-    assert_eq "attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)
-detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "detached after claude exits" || return 1
+    assert_eq "image attach --stdinpassphrase --nobrowse --mountPoint $FAKE_MNT $(_vault_path enc)" "$(cat "$TEST_TMPDIR/during" 2>/dev/null)" "mounted, no detach while claude runs" || return 1
+    assert_eq "image attach --stdinpassphrase --nobrowse --mountPoint $FAKE_MNT $(_vault_path enc)
+eject $FAKE_MNT" "$(cat "$FAKE_DISKUTIL_LOG")" "detached after claude exits" || return 1
 }
 
 # cs runs claude as its child on every path, a fresh start included, so it
@@ -1043,24 +1288,720 @@ test_open_fresh_detaches_after_claude_exits() {
     _encrypted_session enc || return 1
     _bind_conversation enc
     local out rc=0
-    out=$(CLAUDE_CODE_BIN="$(_claude_snapshot)" _open enc "n
+    out=$(CLAUDE_CODE_BIN="$(_claude_snapshot)" _open enc "${VAULT_PW_LINE}n
 " 2>&1) || rc=$?
     assert_eq "0" "$rc" "the open reaches claude: $out" || return 1
-    assert_eq "attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)" "$(cat "$TEST_TMPDIR/during" 2>/dev/null)" "mounted, no detach while claude runs" || return 1
-    assert_eq "attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)
-detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "detached after claude exits" || return 1
+    assert_eq "image attach --stdinpassphrase --nobrowse --mountPoint $FAKE_MNT $(_vault_path enc)" "$(cat "$TEST_TMPDIR/during" 2>/dev/null)" "mounted, no detach while claude runs" || return 1
+    assert_eq "image attach --stdinpassphrase --nobrowse --mountPoint $FAKE_MNT $(_vault_path enc)
+eject $FAKE_MNT" "$(cat "$FAKE_DISKUTIL_LOG")" "detached after claude exits" || return 1
 }
 
 # A first open with no conversation to resume runs claude as a child too.
 test_first_open_detaches_after_claude_exits() {
     _encrypted_session enc || return 1
     local out rc=0
-    out=$(CLAUDE_CODE_BIN="$(_claude_snapshot)" _open enc 2>&1) || rc=$?
+    out=$(CLAUDE_CODE_BIN="$(_claude_snapshot)" _open enc "$VAULT_PW_LINE" 2>&1) || rc=$?
     assert_eq "0" "$rc" "the open reaches claude without asking: $out" || return 1
     assert_output_not_contains "$out" "Continue previous conversation?" "nothing to resume, so no prompt" || return 1
-    assert_eq "attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)" "$(cat "$TEST_TMPDIR/during" 2>/dev/null)" "mounted, no detach while claude runs" || return 1
-    assert_eq "attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)
-detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "detached after claude exits" || return 1
+    assert_eq "image attach --stdinpassphrase --nobrowse --mountPoint $FAKE_MNT $(_vault_path enc)" "$(cat "$TEST_TMPDIR/during" 2>/dev/null)" "mounted, no detach while claude runs" || return 1
+    assert_eq "image attach --stdinpassphrase --nobrowse --mountPoint $FAKE_MNT $(_vault_path enc)
+eject $FAKE_MNT" "$(cat "$FAKE_DISKUTIL_LOG")" "detached after claude exits" || return 1
+}
+
+# A session cs -encrypt sealed before it moved conversations keeps them in
+# Claude Code's own projects folder, where the encrypted session's claude
+# never looks. With the vault mounted, the open moves them in, as cs -encrypt
+# does, or names what stops it and opens without moving anything.
+_plain_conversation() {  # name, id, text -> writes the conversation outside the vault; prints its folder
+    local proj
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$CS_SESSIONS_ROOT/$1")"
+    mkdir -p "$proj"
+    printf '{"type":"user","entrypoint":"cli","message":{"role":"user","content":"%s"}}\n' "$3" > "$proj/$2.jsonl"
+    printf '%s' "$proj"
+}
+
+_vault_projects() {  # name -> the folder in the vault where the session's claude keeps its conversations
+    printf '%s/.cs/vault-mnt/claude-config/projects/%s' "$CS_SESSIONS_ROOT/$1" "$(_encode_cwd_for_claude_test "$CS_SESSIONS_ROOT/$1")"
+}
+
+_claude_args() {  # -> a claude that writes its arguments, one a line, to $TEST_TMPDIR/claude-args
+    local c="$TEST_TMPDIR/claude-args-stub"
+    cat > "$c" <<EOF
+#!/bin/sh
+printf '%s\n' "\$@" > "$TEST_TMPDIR/claude-args"
+EOF
+    chmod +x "$c"
+    printf '%s' "$c"
+}
+
+test_open_moves_conversations_left_outside_the_vault() {
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 proj vault out rc=0
+    proj=$(_plain_conversation enc "$id" "before the vault")
+    vault=$(_vault_projects enc)
+    printf 'claude_session_id: %s\n' "$id" >> "$CS_SESSIONS_ROOT/enc/.cs/local/state"
+    out=$(CLAUDE_CODE_BIN="$(_claude_args)" _open enc "${VAULT_PW_LINE}y
+" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the open reaches claude: $out" || return 1
+    assert_output_contains "$out" "enc: moved this session's conversations from $proj into its vault." "says what it moved" || return 1
+    [ ! -e "$proj" ] || { echo "  FAIL: plaintext conversations left at $proj"; return 1; }
+    assert_file_contains "$vault/$id.jsonl" "before the vault" "the conversation is where the session's claude reads it" || return 1
+    assert_eq "$id" "$(awk 'prev == "--resume" { print } { prev = $0 }' "$TEST_TMPDIR/claude-args")" "claude resumes it" || return 1
+    rc=0
+    out=$(CLAUDE_CODE_BIN="$(_claude_args)" _open enc "${VAULT_PW_LINE}y
+" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the next open reaches claude: $out" || return 1
+    assert_output_not_contains "$out" "moved this session's conversations" "the next open has nothing to move" || return 1
+}
+
+# A session opened since it was encrypted has a folder of its own in the
+# vault already: the conversations from outside join it. Claude Code makes an
+# empty memory/ in every project folder, so both sides have one; an empty
+# folder holds nothing to lose, and it is no reason to move nothing.
+test_open_moves_conversations_beside_those_in_the_vault() {
+    _encrypted_session enc || return 1
+    local old=44444444-4444-4444-8444-444444444444 new=55555555-5555-4555-8555-555555555555 proj vault out rc=0
+    proj=$(_plain_conversation enc "$old" "before the vault")
+    mkdir -p "$proj/$old/subagents" "$proj/memory"
+    echo "agent" > "$proj/$old/subagents/agent-a.jsonl"
+    vault=$(_vault_projects enc)
+    mkdir -p "$vault/memory"
+    echo "in the vault" > "$vault/$new.jsonl"
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the open reaches claude: $out" || return 1
+    assert_output_contains "$out" "enc: moved this session's conversations from $proj into its vault." "says what it moved" || return 1
+    [ ! -e "$proj" ] || { echo "  FAIL: plaintext conversations left at $proj"; return 1; }
+    assert_file_contains "$vault/$old.jsonl" "before the vault" "the conversation from outside joined the vault's" || return 1
+    assert_eq "agent" "$(cat "$vault/$old/subagents/agent-a.jsonl" 2>/dev/null)" "with its subagents" || return 1
+    assert_eq "in the vault" "$(cat "$vault/$new.jsonl")" "the vault's own conversation is untouched" || return 1
+}
+
+test_open_moves_nothing_when_a_conversation_is_on_both_sides() {
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 other=66666666-6666-4666-8666-666666666666 proj vault out rc=0
+    proj=$(_plain_conversation enc "$id" "outside")
+    _plain_conversation enc "$other" "also outside" >/dev/null
+    vault=$(_vault_projects enc)
+    mkdir -p "$vault"
+    echo "inside" > "$vault/$id.jsonl"
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the open goes on: $out" || return 1
+    assert_output_contains "$out" "enc: $proj/$id.jsonl is in the vault too, as .cs/claude-config/projects/${proj##*/}/$id.jsonl, so cs moved none of the conversations in $proj. Keep the copy you want in the vault, remove the other, then reopen." "names the clash and what to do" || return 1
+    assert_file_contains "$proj/$id.jsonl" "outside" "the conversation outside is untouched" || return 1
+    assert_eq "inside" "$(cat "$vault/$id.jsonl")" "the one in the vault is untouched" || return 1
+    assert_file_contains "$proj/$other.jsonl" "also outside" "nothing else moved" || return 1
+}
+
+test_open_moves_nothing_through_a_linked_conversations_folder() {
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 proj real out rc=0
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$CS_SESSIONS_ROOT/enc")"
+    real="$TEST_TMPDIR/kept-elsewhere"
+    mkdir -p "$real"
+    echo "conversation" > "$real/$id.jsonl"
+    ln -s "$real" "$proj"
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the open goes on: $out" || return 1
+    assert_output_contains "$out" "enc: $proj is a link, so cs moved nothing from it; the conversations in the folder it points to stay outside the vault, in plain text." "says what stays in plain text" || return 1
+    assert_eq "$real" "$(readlink "$proj")" "the link is left as it was" || return 1
+    assert_eq "conversation" "$(cat "$real/$id.jsonl")" "the conversation stays where the link points" || return 1
+    [ ! -e "$(_vault_projects enc)/$id.jsonl" ] || { echo "  FAIL: the conversation was moved through the link"; return 1; }
+}
+
+# Claude Code lists each running claude in sessions/<pid>.json in its config
+# folder, with the folder it runs in; one running in the session outside cs
+# writes its conversation outside the vault.
+test_open_moves_nothing_while_a_claude_writes_outside_the_vault() {
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 proj out rc=0 dir
+    proj=$(_plain_conversation enc "$id" "outside")
+    dir=$(cd "$CS_SESSIONS_ROOT/enc" && pwd -P)
+    sleep 300 &
+    local live=$!
+    mkdir -p "$HOME/.claude/sessions"
+    printf '{"pid":%s,"sessionId":"%s","cwd":"%s","kind":"interactive"}' "$live" "$id" "$dir" > "$HOME/.claude/sessions/$live.json"
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+    assert_eq "0" "$rc" "the open goes on: $out" || return 1
+    assert_output_contains "$out" "enc: a claude (pid $live) runs in this session outside cs and writes its conversations to $proj, so cs moved none of them into the vault. Reopen once it has ended." "names the running claude" || return 1
+    assert_file_contains "$proj/$id.jsonl" "outside" "the conversation outside is untouched" || return 1
+    [ ! -e "$(_vault_projects enc)/$id.jsonl" ] || { echo "  FAIL: the conversation was moved while claude wrote it"; return 1; }
+}
+
+# A vault with no room: cp and mv, asked to carry something out of the
+# conversations folder outside the vault, write each file cut short where it
+# would land, then fail as a full disk makes them. Everything else they do
+# for real.
+_vault_without_room() {
+    local d="$TEST_TMPDIR/stub" tool real
+    for tool in cp mv; do
+        real=$(PATH=/bin:/usr/bin command -v "$tool")
+        cat > "$d/$tool" <<EOF
+#!/bin/sh
+for last in "\$@"; do :; done
+case "\$last" in "\$CS_TRANSCRIPTS_DIR"/*) exec $real "\$@" ;; esac
+crossing=0
+for arg in "\$@"; do
+    case "\$arg" in
+        "\$CS_TRANSCRIPTS_DIR"/*)
+            crossing=1
+            land=\$last
+            [ -d "\$last" ] && land="\$last/\${arg##*/}"
+            /bin/cp -pPR "\$arg" "\$last"
+            find "\$land" -type f -exec sh -c ': > "\$1"' _ {} \;
+            ;;
+    esac
+done
+[ "\$crossing" = 1 ] || exec $real "\$@"
+echo "$tool: \$last: No space left on device" >&2
+exit 1
+EOF
+        chmod +x "$d/$tool"
+    done
+}
+
+# A copy into the vault that stops part-way leaves the conversations outside
+# whole and nothing of them under the session's folder in the vault, where
+# the next open would bind a conversation cut short.
+test_open_leaves_no_cut_conversation_in_a_vault_without_room() {
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 proj vault out rc=0
+    proj=$(_plain_conversation enc "$id" "before the vault")
+    vault=$(_vault_projects enc)
+    _vault_without_room
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    assert_eq "" "$(find "$FAKE_MNT" -name '*.jsonl')" "the vault holds nothing of the conversation" || return 1
+    [ ! -e "$vault" ] || { echo "  FAIL: the vault has a folder for the session"; return 1; }
+    assert_file_contains "$proj/$id.jsonl" "before the vault" "the conversation outside is whole" || return 1
+    assert_eq "1" "$rc" "the open stops: $out" || return 1
+    assert_output_contains "$out" "enc: could not copy the session's conversations from $proj into its vault. They are all still in $proj, whole, and the vault holds none of them. cp said: cp: " "names the whole copy" || return 1
+}
+
+test_encrypt_leaves_no_cut_conversation_in_a_vault_without_room() {
+    _stubs
+    _populated_session enc
+    local s="$CS_SESSIONS_ROOT/enc/.cs" id=44444444-4444-4444-8444-444444444444 out rc=0 proj
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$CS_SESSIONS_ROOT/enc")"
+    mkdir -p "$proj"
+    echo "conversation" > "$proj/$id.jsonl"
+    _vault_without_room
+    out=$(_encrypt enc 2>&1) || rc=$?
+    assert_eq "" "$(find "$s/vault-mnt" -name '*.jsonl')" "the vault holds nothing of the conversation" || return 1
+    assert_eq "conversation" "$(cat "$proj/$id.jsonl")" "the conversation outside is whole" || return 1
+    assert_eq "1" "$rc" "cs -encrypt stops: $out" || return 1
+    assert_output_contains "$out" "enc: could not copy the session's conversations ($proj) into the vault. They are all still there, whole, and the vault holds none of them. Already moved: .cs/memory .cs/plans .cs/local/session.log .cs/local/mail .cs/local/pending-handoff .cs/handoffs .cs/checkpoints .cs/narrative-archive. The vault is still mounted at .cs/vault-mnt; finish by hand or move those back, then detach it. cp said: cp: " "names the whole copy and what moved" || return 1
+    [ ! -L "$s/memory" ] && [ ! -e "$s/local/pre-open" ] || { echo "  FAIL: the session was linked into the vault"; return 1; }
+}
+
+# A move that stopped after the vault had its copies leaves the same content
+# on both sides. That is no clash: the copy outside goes, and the rest moves.
+test_open_removes_a_copy_outside_that_the_vault_already_holds() {
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 other=66666666-6666-4666-8666-666666666666 proj vault out rc=0
+    proj=$(_plain_conversation enc "$id" "moved before")
+    _plain_conversation enc "$other" "still outside" >/dev/null
+    mkdir -p "$proj/$id/subagents"
+    echo "agent" > "$proj/$id/subagents/agent-a.jsonl"
+    vault=$(_vault_projects enc)
+    mkdir -p "$vault"
+    cp -pR "$proj/$id.jsonl" "$proj/$id" "$vault/"
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the open reaches claude: $out" || return 1
+    assert_output_not_contains "$out" "is in the vault too" "the same content on both sides is no clash" || return 1
+    [ ! -e "$proj" ] || { echo "  FAIL: plaintext conversations left at $proj: $(ls -A "$proj")"; return 1; }
+    assert_file_contains "$vault/$id.jsonl" "moved before" "the vault keeps its copy" || return 1
+    assert_eq "agent" "$(cat "$vault/$id/subagents/agent-a.jsonl" 2>/dev/null)" "with its subagents" || return 1
+    assert_file_contains "$vault/$other.jsonl" "still outside" "the conversation only outside moved in" || return 1
+}
+
+test_open_names_what_it_could_not_remove_outside_the_vault() {
+    [ "$(id -u)" != "0" ] || { echo "  SKIP: root ignores the permission that makes the removal fail"; return 77; }
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 proj vault out rc=0
+    proj=$(_plain_conversation enc "$id" "before the vault")
+    vault=$(_vault_projects enc)
+    chmod 555 "$CS_TRANSCRIPTS_DIR"
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    chmod 755 "$CS_TRANSCRIPTS_DIR"
+    assert_eq "0" "$rc" "the open reaches claude: $out" || return 1
+    assert_file_contains "$vault/$id.jsonl" "before the vault" "the vault holds the whole conversation" || return 1
+    assert_output_contains "$out" "enc: the vault holds whole copies of this session's conversations, but cs could not remove them all from outside it. What is left in $proj is in plain text; remove it by hand. Removing it failed with: rmdir: " "names what is left outside" || return 1
+}
+
+# What the open says it removed outside the vault is what went. A copy the
+# vault already holds that would not go is still outside, and is not named.
+test_open_names_as_removed_only_what_went() {
+    [ "$(id -u)" != "0" ] || { echo "  SKIP: root ignores the permission that makes the removal fail"; return 77; }
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 proj vault out rc=0
+    proj=$(_plain_conversation enc "$id" "moved before")
+    vault=$(_vault_projects enc)
+    mkdir -p "$vault"
+    cp -p "$proj/$id.jsonl" "$vault/"
+    chmod 555 "$proj"
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    chmod 755 "$proj"
+    assert_eq "0" "$rc" "the open reaches claude: $out" || return 1
+    assert_file_contains "$proj/$id.jsonl" "moved before" "the copy outside is still there" || return 1
+    assert_output_contains "$out" "enc: the vault holds whole copies of this session's conversations, but cs could not remove them all from outside it. What is left in $proj is in plain text; remove it by hand. Removing it failed with: rm: " "names what is left outside" || return 1
+    assert_output_not_contains "$out" "removed from $proj" "names nothing as removed" || return 1
+}
+
+# An empty folder in the vault holds nothing to lose either: the folder from
+# outside takes its place.
+test_open_moves_a_folder_over_an_empty_one_in_the_vault() {
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 proj vault out rc=0
+    proj=$(_plain_conversation enc "$id" "before the vault")
+    mkdir -p "$proj/memory"
+    echo "note" > "$proj/memory/n.md"
+    vault=$(_vault_projects enc)
+    mkdir -p "$vault/memory"
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the open reaches claude: $out" || return 1
+    assert_output_not_contains "$out" "is in the vault too" "an empty folder in the vault is no clash" || return 1
+    assert_eq "note" "$(cat "$vault/memory/n.md" 2>/dev/null)" "the folder from outside is the vault's now" || return 1
+    assert_eq "n.md" "$(ls -A "$vault/memory")" "and holds only what it held outside" || return 1
+    assert_file_contains "$vault/$id.jsonl" "before the vault" "the conversation moved too" || return 1
+    [ ! -e "$proj" ] || { echo "  FAIL: plaintext conversations left at $proj"; return 1; }
+}
+
+# The open says what it did: that it moved conversations only when it moved
+# one, what else it moved by name, and what it only removed outside.
+test_open_says_it_moved_conversations_only_when_it_moved_one() {
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 proj vault out rc=0
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$CS_SESSIONS_ROOT/enc")"
+    vault=$(_vault_projects enc)
+    mkdir -p "$proj/memory" "$vault"
+    echo "in the vault" > "$vault/$id.jsonl"
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the open reaches claude: $out" || return 1
+    [ ! -e "$proj" ] || { echo "  FAIL: the empty folder is left at $proj"; return 1; }
+    assert_output_not_contains "$out" "moved" "an empty folder outside is removed without a word" || return 1
+
+    mkdir -p "$proj"
+    echo "index" > "$proj/sessions-index.json"
+    rc=0
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the second open reaches claude: $out" || return 1
+    assert_eq "index" "$(cat "$vault/sessions-index.json" 2>/dev/null)" "the file moved" || return 1
+    assert_output_contains "$out" "enc: moved sessions-index.json from $proj into its vault.$" "names what moved" || return 1
+    assert_output_not_contains "$out" "conversations" "and calls it no conversation" || return 1
+
+    mkdir -p "$proj"
+    cp -p "$vault/$id.jsonl" "$proj/$id.jsonl"
+    rc=0
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the third open reaches claude: $out" || return 1
+    [ ! -e "$proj" ] || { echo "  FAIL: the copy is left at $proj"; return 1; }
+    assert_output_contains "$out" "enc: removed from $proj what its vault already holds: $id.jsonl.$" "names the copy it removed outside" || return 1
+    assert_output_not_contains "$out" ": moved" "and moved nothing" || return 1
+}
+
+# Two opens that reach the move together would both copy: the move runs
+# under the openers' mutex, and an open that cannot take it moves nothing.
+test_open_moves_nothing_while_another_cs_holds_the_openers_mutex() {
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 meta="$CS_SESSIONS_ROOT/enc/.cs" proj out rc=0
+    proj=$(_plain_conversation enc "$id" "before the vault")
+    _hold_session_mutex "$meta/session.mutex.lock" || return 1
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    kill "$MUTEX_HOLDER" 2>/dev/null; wait "$MUTEX_HOLDER" 2>/dev/null
+    assert_file_contains "$proj/$id.jsonl" "before the vault" "the conversation outside is untouched" || return 1
+    [ ! -e "$(_vault_projects enc)" ] || { echo "  FAIL: the vault has a folder for the session"; return 1; }
+    assert_eq "1" "$rc" "the open stops: $out" || return 1
+    assert_output_contains "$out" "enc: another cs is opening this session ($meta/session.mutex.lock is held), so cs moved none of its conversations into the vault; try again in a moment." "names the held mutex" || return 1
+}
+
+# Claude Code records when the process started beside its pid, as ps prints
+# it in UTC. A pid that now names another process has another start time: its
+# file is one a claude that is gone left behind, and no reason to move nothing.
+test_open_moves_past_a_claude_file_whose_pid_names_another_process() {
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 proj out rc=0 dir started
+    proj=$(_plain_conversation enc "$id" "outside")
+    dir=$(cd "$CS_SESSIONS_ROOT/enc" && pwd -P)
+    sleep 300 &
+    local live=$!
+    mkdir -p "$HOME/.claude/sessions"
+    started=$(LC_ALL=C TZ=UTC /bin/ps -o lstart= -p "$live" | sed 's/^ *//; s/ *$//')
+    printf '{"pid":%s,"sessionId":"%s","cwd":"%s","startedAt":1795371270300,"procStart":"%s","kind":"interactive"}' "$live" "$id" "$dir" "$started" > "$HOME/.claude/sessions/$live.json"
+    out=$(TZ=Asia/Tokyo _open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the open goes on: $out" || { kill "$live" 2>/dev/null; return 1; }
+    assert_output_contains "$out" "enc: a claude (pid $live) runs in this session outside cs" "the start time Claude Code recorded names the running claude, whatever the shell's time zone" || { kill "$live" 2>/dev/null; return 1; }
+    printf '{"pid":%s,"sessionId":"%s","cwd":"%s","startedAt":1795371270300,"procStart":"Thu Jan  1 00:00:00 1970","kind":"interactive"}' "$live" "$id" "$dir" > "$HOME/.claude/sessions/$live.json"
+    rc=0
+    out=$(TZ=Asia/Tokyo _open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+    assert_eq "0" "$rc" "the second open goes on: $out" || return 1
+    assert_output_contains "$out" "enc: moved this session's conversations from $proj into its vault." "another start time is another process, so the move runs" || return 1
+    assert_file_contains "$(_vault_projects enc)/$id.jsonl" "outside" "the conversation is in the vault" || return 1
+}
+
+# cs -encrypt holds the session lock, so a claude running in the session is
+# one started outside cs, with its conversation open outside the vault.
+test_encrypt_leaves_conversations_a_running_claude_writes() {
+    _stubs
+    _populated_session enc
+    local s="$CS_SESSIONS_ROOT/enc/.cs" id=44444444-4444-4444-8444-444444444444 out rc=0 proj dir started
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$CS_SESSIONS_ROOT/enc")"
+    mkdir -p "$proj"
+    echo "conversation" > "$proj/$id.jsonl"
+    dir=$(cd "$CS_SESSIONS_ROOT/enc" && pwd -P)
+    sleep 300 &
+    local live=$!
+    mkdir -p "$HOME/.claude/sessions"
+    started=$(LC_ALL=C TZ=UTC /bin/ps -o lstart= -p "$live" | sed 's/^ *//; s/ *$//')
+    printf '{"pid":%s,"sessionId":"%s","cwd":"%s","startedAt":1795371270300,"procStart":"%s","kind":"interactive"}' "$live" "$id" "$dir" "$started" > "$HOME/.claude/sessions/$live.json"
+    out=$(_encrypt enc 2>&1) || rc=$?
+    kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+    assert_eq "conversation" "$(cat "$proj/$id.jsonl" 2>/dev/null)" "the conversation is where the claude writes it" || return 1
+    assert_eq "" "$(find "$s/vault-mnt" -name '*.jsonl')" "the vault holds nothing of it" || return 1
+    assert_eq "0" "$rc" "cs -encrypt finishes: $out" || return 1
+    assert_output_contains "$out" "enc: a claude (pid $live) runs in this session outside cs and writes its conversations to $proj, so cs moved none of them into the vault. The next open moves them once it has ended.$" "names the running claude and when they move" || return 1
+    assert_output_contains "$out" "^  - this session's conversations: a claude was running in the session outside cs, so cs left them in $proj; the next open moves them once it has ended$" "the closing list names them" || return 1
+    [ -L "$s/memory" ] || { echo "  FAIL: the session was not linked into the vault"; return 1; }
+}
+
+# Claude Code names a project folder after its path with every character
+# that is no letter or digit turned into a dash, so two paths can share one
+# folder. A conversation there records the folder its claude ran in: one that
+# names the other path is not this session's, and cs moves none of the folder.
+_conversation_of_a_path_sharing_the_folder() {  # name, id -> writes it beside the session's; prints the other path
+    local other proj
+    other="$(cd "$CS_SESSIONS_ROOT" && pwd -P)-$1"
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$CS_SESSIONS_ROOT/$1")"
+    mkdir -p "$proj" "$other"
+    printf '{"type":"user","entrypoint":"cli","cwd":"%s","message":{"role":"user","content":"of the other path"}}\n' "$other" > "$proj/$2.jsonl"
+    printf '%s' "$other"
+}
+
+test_open_moves_nothing_from_a_folder_another_path_shares() {
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 theirs=77777777-7777-4777-8777-777777777777 proj other dir out rc=0
+    proj=$(_plain_conversation enc "$id" "of this session")
+    dir=$(cd "$CS_SESSIONS_ROOT/enc" && pwd -P)
+    printf '{"type":"user","entrypoint":"cli","cwd":"%s","message":{"role":"user","content":"of this session"}}\n{"type":"user","cwd":"%s/sub"}\n' "$dir" "$dir" > "$proj/$id.jsonl"
+    other=$(_conversation_of_a_path_sharing_the_folder enc "$theirs")
+    assert_eq "${proj##*/}" "$(_encode_cwd_for_claude_test "$other")" "the fixture's other path shares the folder" || return 1
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the open goes on: $out" || return 1
+    assert_file_contains "$proj/$theirs.jsonl" "of the other path" "the other path's conversation is untouched" || return 1
+    assert_file_contains "$proj/$id.jsonl" "of this session" "and so is this session's" || return 1
+    [ ! -e "$(_vault_projects enc)" ] || { echo "  FAIL: the vault has a folder for the session"; return 1; }
+    assert_output_contains "$out" "enc: $proj/$theirs.jsonl is a conversation claude held in $other, which Claude Code files under the same folder as this session, so cs moved none of the conversations in $proj into the vault. They stay outside it, in plain text.$" "names the conversation and the path it belongs to" || return 1
+    rm "$proj/$theirs.jsonl"
+    rc=0
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the second open goes on: $out" || return 1
+    assert_file_contains "$(_vault_projects enc)/$id.jsonl" "of this session" "without it, this session's conversation moves, a change of folder inside it included" || return 1
+}
+
+test_encrypt_moves_nothing_from_a_folder_another_path_shares() {
+    _stubs
+    _populated_session enc
+    local s="$CS_SESSIONS_ROOT/enc/.cs" theirs=77777777-7777-4777-8777-777777777777 proj other out rc=0
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$CS_SESSIONS_ROOT/enc")"
+    other=$(_conversation_of_a_path_sharing_the_folder enc "$theirs")
+    out=$(_encrypt enc 2>&1) || rc=$?
+    assert_file_contains "$proj/$theirs.jsonl" "of the other path" "the other path's conversation is untouched" || return 1
+    assert_eq "" "$(find "$s/vault-mnt" -name '*.jsonl')" "the vault holds nothing of it" || return 1
+    assert_eq "0" "$rc" "cs -encrypt finishes: $out" || return 1
+    assert_output_contains "$out" "enc: $proj/$theirs.jsonl is a conversation claude held in $other, which Claude Code files under the same folder as this session, so cs moved none of the conversations in $proj into the vault. They stay outside it, in plain text.$" "names the conversation and the path it belongs to" || return 1
+    assert_output_contains "$out" "^  - this session's conversations: $proj holds a conversation of another path too, so cs left the whole folder outside the vault$" "the closing list names the folder" || return 1
+}
+
+# Claude Code writes the path a claude runs in as JSON, so a quote or a
+# backslash in it is escaped where cs reads it: in each line of a
+# conversation, and in sessions/<pid>.json. cs reads the path, not its escape.
+test_open_reads_the_escaped_path_of_a_conversation_sharing_the_folder() {
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 theirs=77777777-7777-4777-8777-777777777777 proj other out rc=0
+    proj=$(_plain_conversation enc "$id" "of this session")
+    other="$(cd "$CS_SESSIONS_ROOT" && pwd -P)\"enc"
+    jq -nc --arg cwd "$other" '{type: "user", cwd: $cwd, message: {role: "user", content: "of the other path"}}' > "$proj/$theirs.jsonl"
+    assert_file_contains "$proj/$theirs.jsonl" '\\"enc"' "the fixture records the quote escaped" || return 1
+    assert_eq "${proj##*/}" "$(printf '%s' "$other" | sed 's/[^A-Za-z0-9]/-/g')" "the fixture's other path shares the folder" || return 1
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the open goes on: $out" || return 1
+    assert_file_contains "$proj/$theirs.jsonl" "of the other path" "the other path's conversation is untouched" || return 1
+    [ ! -e "$(_vault_projects enc)" ] || { echo "  FAIL: the vault has a folder for the session"; return 1; }
+    assert_output_contains "$out" "enc: $proj/$theirs.jsonl is a conversation claude held in $other, which Claude Code files under the same folder as this session, so cs moved none of the conversations in $proj into the vault. They stay outside it, in plain text.$" "names the conversation and the path it belongs to" || return 1
+}
+
+test_open_reads_the_escaped_path_of_a_running_claude() {
+    export CS_SESSIONS_ROOT="$TEST_TMPDIR/odd \"q\" root"
+    mkdir -p "$CS_SESSIONS_ROOT"
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 fresh=88888888-8888-4888-8888-888888888888 proj out rc=0 dir
+    proj=$(_plain_conversation enc "$id" "outside")
+    dir=$(cd "$CS_SESSIONS_ROOT/enc" && pwd -P)
+    sleep 300 &
+    local live=$!
+    mkdir -p "$HOME/.claude/sessions"
+    jq -nc --argjson pid "$live" --arg id "$fresh" --arg cwd "$dir" '{pid: $pid, sessionId: $id, cwd: $cwd, kind: "interactive"}' > "$HOME/.claude/sessions/$live.json"
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+    assert_file_contains "$HOME/.claude/sessions/$live.json" 'odd \\"q\\" root' "the fixture records the quotes escaped" || return 1
+    assert_eq "0" "$rc" "the open goes on: $out" || return 1
+    assert_output_contains "$out" "enc: a claude (pid $live) runs in this session outside cs and writes its conversations to $proj, so cs moved none of them into the vault. Reopen once it has ended." "names the running claude" || return 1
+    assert_file_contains "$proj/$id.jsonl" "outside" "the conversation outside is untouched" || return 1
+}
+
+# A sessions file of a running process that jq cannot read rules no claude
+# out, so nothing moves and cs names the file.
+test_open_moves_nothing_past_a_running_process_file_it_cannot_read() {
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 proj out rc=0
+    proj=$(_plain_conversation enc "$id" "outside")
+    sleep 300 &
+    local live=$!
+    mkdir -p "$HOME/.claude/sessions"
+    printf '{"pid":%s,"sessionId":"%s","cw' "$live" "$id" > "$HOME/.claude/sessions/$live.json"
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+    assert_eq "0" "$rc" "the open goes on: $out" || return 1
+    assert_file_contains "$proj/$id.jsonl" "outside" "the conversation outside is untouched" || return 1
+    assert_output_contains "$out" "enc: cs could not read $HOME/.claude/sessions/$live.json, which Claude Code keeps for a running process (pid $live), so it cannot tell whether a claude writes the conversations in $proj, and moved none of them into the vault. The next open moves them once that process has ended. jq said: jq: parse error: " "names the file and what jq said" || return 1
+}
+
+# Claude Code writes sessions/<pid>.json in place, so a read can find it cut
+# short, and a claude that was killed can leave it so. A file last written
+# before the process its pid names started is such a leftover, of another
+# process, and holds nothing back.
+test_open_moves_past_a_cut_file_older_than_the_process_with_its_pid() {
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 proj out rc=0
+    proj=$(_plain_conversation enc "$id" "outside")
+    sleep 300 &
+    local live=$!
+    mkdir -p "$HOME/.claude/sessions"
+    printf '{"pid":%s,"sessionId":"%s","cw' "$live" "$id" > "$HOME/.claude/sessions/$live.json"
+    touch -t 202001010000 "$HOME/.claude/sessions/$live.json"
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+    assert_eq "0" "$rc" "the open goes on: $out" || return 1
+    assert_output_contains "$out" "enc: moved this session's conversations from $proj into its vault." "a file older than the process is another process's, so the move runs" || return 1
+    assert_file_contains "$(_vault_projects enc)/$id.jsonl" "outside" "the conversation is in the vault" || return 1
+}
+
+# An empty sessions file of a running process is one cs cannot read, in cs's
+# words and not jq's, and cs -encrypt's closing list says when the
+# conversations move, as the warning does.
+test_encrypt_leaves_conversations_past_an_empty_running_process_file() {
+    _stubs
+    _populated_session enc
+    local s="$CS_SESSIONS_ROOT/enc/.cs" id=44444444-4444-4444-8444-444444444444 out rc=0 proj
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$CS_SESSIONS_ROOT/enc")"
+    mkdir -p "$proj"
+    echo "conversation" > "$proj/$id.jsonl"
+    sleep 300 &
+    local live=$!
+    mkdir -p "$HOME/.claude/sessions"
+    : > "$HOME/.claude/sessions/$live.json"
+    out=$(_encrypt enc 2>&1) || rc=$?
+    kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+    assert_eq "conversation" "$(cat "$proj/$id.jsonl" 2>/dev/null)" "the conversation outside is untouched" || return 1
+    assert_eq "" "$(find "$s/vault-mnt" -name '*.jsonl')" "the vault holds nothing of it" || return 1
+    assert_eq "0" "$rc" "cs -encrypt finishes: $out" || return 1
+    assert_output_contains "$out" "enc: cs could not read $HOME/.claude/sessions/$live.json, which Claude Code keeps for a running process (pid $live), so it cannot tell whether a claude writes the conversations in $proj, and moved none of them into the vault. The next open moves them once that process has ended. The file holds no JSON value.$" "names the file and says it is empty" || return 1
+    assert_output_contains "$out" "^  - this session's conversations: cs could not tell whether a running claude writes them, so cs left them in $proj; the next open moves them once that process has ended$" "the closing list says when they move" || return 1
+    [ -L "$s/memory" ] || { echo "  FAIL: the session was not linked into the vault"; return 1; }
+}
+
+# The cwd in sessions/<pid>.json is the folder its claude started in: a cd
+# leaves it as it is, and only entering or leaving a worktree rewrites it,
+# while a resumed conversation stays in its own folder. So a claude resumed
+# in the session that then entered a worktree has its cwd elsewhere. The
+# file's sessionId names the conversation that claude writes: one in
+# the session's folder stops the move wherever the claude is now, and one that
+# is not there leaves a claude in a subfolder no reason to move nothing.
+test_open_moves_nothing_while_a_claude_that_changed_folder_writes() {
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 elsewhere=88888888-8888-4888-8888-888888888888 proj out rc=0 dir started
+    proj=$(_plain_conversation enc "$id" "outside")
+    dir=$(cd "$CS_SESSIONS_ROOT/enc" && pwd -P)
+    mkdir -p "$dir/sub"
+    sleep 300 &
+    local live=$!
+    mkdir -p "$HOME/.claude/sessions"
+    started=$(LC_ALL=C TZ=UTC /bin/ps -o lstart= -p "$live" | sed 's/^ *//; s/ *$//')
+    printf '{"pid":%s,"sessionId":"%s","cwd":"%s/sub","startedAt":1795371270300,"procStart":"%s","kind":"interactive"}' "$live" "$id" "$dir" "$started" > "$HOME/.claude/sessions/$live.json"
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the open goes on: $out" || { kill "$live" 2>/dev/null; return 1; }
+    assert_file_contains "$proj/$id.jsonl" "outside" "the conversation the claude writes is untouched" || { kill "$live" 2>/dev/null; return 1; }
+    assert_output_contains "$out" "enc: a claude (pid $live) runs in this session outside cs and writes its conversations to $proj, so cs moved none of them into the vault. Reopen once it has ended." "names the running claude" || { kill "$live" 2>/dev/null; return 1; }
+    printf '{"pid":%s,"sessionId":"%s","cwd":"%s/sub","startedAt":1795371270300,"procStart":"%s","kind":"interactive"}' "$live" "$elsewhere" "$dir" "$started" > "$HOME/.claude/sessions/$live.json"
+    rc=0
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+    assert_eq "0" "$rc" "the second open goes on: $out" || return 1
+    assert_output_contains "$out" "enc: moved this session's conversations from $proj into its vault." "a claude writing a conversation kept elsewhere holds nothing back" || return 1
+    assert_file_contains "$(_vault_projects enc)/$id.jsonl" "outside" "the conversation is in the vault" || return 1
+}
+
+# Where the filesystem takes two names that differ only in the case of a
+# letter as one, as APFS does unless told otherwise, two paths that differ
+# so share a conversations folder too.
+test_open_moves_nothing_from_a_folder_a_path_of_another_case_shares() {
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 theirs=77777777-7777-4777-8777-777777777777 proj other theirs_dir out rc=0
+    proj=$(_plain_conversation enc "$id" "of this session")
+    other="$(cd "$TEST_TMPDIR" && pwd -P)/SESSIONS-enc"
+    theirs_dir="$CS_TRANSCRIPTS_DIR/$(printf '%s' "$other" | sed 's/[^A-Za-z0-9]/-/g')"
+    [ "$theirs_dir" -ef "$proj" ] || { echo "  SKIP: this filesystem tells names apart by case"; return 77; }
+    assert_eq "1" "$([ "${theirs_dir##*/}" = "${proj##*/}" ]; echo $?)" "the fixture's two folder names differ as text" || return 1
+    jq -nc --arg cwd "$other" '{type: "user", cwd: $cwd, message: {role: "user", content: "of the other path"}}' > "$theirs_dir/$theirs.jsonl"
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the open goes on: $out" || return 1
+    assert_file_contains "$proj/$theirs.jsonl" "of the other path" "the other path's conversation is untouched" || return 1
+    [ ! -e "$(_vault_projects enc)" ] || { echo "  FAIL: the vault has a folder for the session"; return 1; }
+    assert_output_contains "$out" "enc: $proj/$theirs.jsonl is a conversation claude held in $other, which Claude Code files under the same folder as this session, so cs moved none of the conversations in $proj into the vault. They stay outside it, in plain text.$" "names the conversation and the path it belongs to" || return 1
+}
+
+# A folder cs cannot list reads as an empty one, with nothing in it to copy.
+# The move starts only when cs can read every folder on both sides.
+test_open_moves_nothing_from_a_folder_it_cannot_read() {
+    [ "$(id -u)" != "0" ] || { echo "  SKIP: root reads a folder whatever its mode"; return 77; }
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 proj out rc=0
+    proj=$(_plain_conversation enc "$id" "before the vault")
+    mkdir -p "$proj/$id/subagents"
+    echo "agent" > "$proj/$id/subagents/agent-a.jsonl"
+    chmod 000 "$proj/$id"
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    chmod 755 "$proj/$id"
+    assert_eq "0" "$rc" "the open goes on: $out" || return 1
+    assert_file_contains "$proj/$id.jsonl" "before the vault" "the conversation outside is untouched" || return 1
+    assert_eq "agent" "$(cat "$proj/$id/subagents/agent-a.jsonl" 2>/dev/null)" "and so is the folder cs could not read" || return 1
+    [ ! -e "$(_vault_projects enc)" ] || { echo "  FAIL: the vault has a folder for the session"; return 1; }
+    assert_output_contains "$out" "enc: cs cannot read every folder under $proj, so it moved none of the conversations in $proj into the vault: they are all still there, and the vault holds what it held before. The next open moves them once cs can read every folder. cs cannot list $proj/$id.$" "names the folder and what moved" || return 1
+}
+
+test_encrypt_moves_nothing_from_a_folder_it_cannot_read() {
+    [ "$(id -u)" != "0" ] || { echo "  SKIP: root reads a folder whatever its mode"; return 77; }
+    _stubs
+    _populated_session enc
+    local s="$CS_SESSIONS_ROOT/enc/.cs" id=44444444-4444-4444-8444-444444444444 out rc=0 proj
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$CS_SESSIONS_ROOT/enc")"
+    mkdir -p "$proj/$id/subagents"
+    echo "conversation" > "$proj/$id.jsonl"
+    echo "agent" > "$proj/$id/subagents/agent-a.jsonl"
+    chmod 000 "$proj/$id"
+    out=$(_encrypt enc 2>&1) || rc=$?
+    chmod 755 "$proj/$id"
+    assert_eq "conversation" "$(cat "$proj/$id.jsonl" 2>/dev/null)" "the conversation outside is untouched" || return 1
+    assert_eq "agent" "$(cat "$proj/$id/subagents/agent-a.jsonl" 2>/dev/null)" "and so is the folder cs could not read" || return 1
+    assert_eq "" "$(find "$s/vault-mnt" -name '*.jsonl')" "the vault holds nothing of them" || return 1
+    assert_eq "0" "$rc" "cs -encrypt finishes: $out" || return 1
+    assert_output_contains "$out" "enc: cs cannot read every folder under $proj, so it moved none of the conversations in $proj into the vault: they are all still there, and the vault holds what it held before. The next open moves them once cs can read every folder. cs cannot list $proj/$id.$" "names the folder and what moved" || return 1
+    assert_output_contains "$out" "^  - this session's conversations: cs could not read every folder under $proj, so cs left them there; the next open moves them once it can$" "the closing list names them" || return 1
+    [ -L "$s/memory" ] || { echo "  FAIL: the session was not linked into the vault"; return 1; }
+}
+
+# A folder cs can list but not enter cannot be copied, though find walks past
+# it without a word. The move starts only when cs can enter every folder too.
+test_open_moves_nothing_from_a_folder_it_cannot_enter() {
+    [ "$(id -u)" != "0" ] || { echo "  SKIP: root enters a folder whatever its mode"; return 77; }
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 proj out rc=0
+    proj=$(_plain_conversation enc "$id" "before the vault")
+    mkdir -p "$proj/$id/subagents"
+    echo "agent" > "$proj/$id/subagents/agent-a.jsonl"
+    chmod 600 "$proj/$id"
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    chmod 755 "$proj/$id"
+    assert_eq "0" "$rc" "the open goes on: $out" || return 1
+    assert_file_contains "$proj/$id.jsonl" "before the vault" "the conversation outside is untouched" || return 1
+    assert_eq "agent" "$(cat "$proj/$id/subagents/agent-a.jsonl" 2>/dev/null)" "and so is the folder cs could not enter" || return 1
+    [ ! -e "$(_vault_projects enc)" ] || { echo "  FAIL: the vault has a folder for the session"; return 1; }
+    assert_output_contains "$out" "enc: cs cannot read every folder under $proj, so it moved none of the conversations in $proj into the vault: they are all still there, and the vault holds what it held before. The next open moves them once cs can read every folder. cs cannot enter $proj/$id.$" "names the folder and what moved" || return 1
+}
+
+# A folder cs can list but not enter hides what its files hold: the names
+# read, the content does not. cs cannot say the vault holds all of it.
+test_open_claims_no_whole_copy_of_a_folder_it_cannot_enter() {
+    [ "$(id -u)" != "0" ] || { echo "  SKIP: root enters a folder whatever its mode"; return 77; }
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 proj vault out rc=0
+    proj=$(_plain_conversation enc "$id" "moved before")
+    mkdir -p "$proj/$id/subagents"
+    echo "outside" > "$proj/$id/subagents/agent-a.jsonl"
+    vault=$(_vault_projects enc)
+    mkdir -p "$vault/$id/subagents"
+    cp -p "$proj/$id.jsonl" "$vault/"
+    echo "vault" > "$vault/$id/subagents/agent-a.jsonl"
+    chmod 600 "$proj/$id"
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    chmod 755 "$proj/$id"
+    assert_eq "0" "$rc" "the open goes on: $out" || return 1
+    assert_output_not_contains "$out" "the vault holds whole copies" "claims no whole copy in the vault" || return 1
+    assert_output_not_contains "$out" "what its vault already holds" "says it removed nothing" || return 1
+    assert_eq "outside" "$(cat "$proj/$id/subagents/agent-a.jsonl" 2>/dev/null)" "the file outside is untouched" || return 1
+    assert_eq "vault" "$(cat "$vault/$id/subagents/agent-a.jsonl" 2>/dev/null)" "and so is the vault's" || return 1
+    assert_file_contains "$proj/$id.jsonl" "moved before" "the conversation outside stays" || return 1
+}
+
+# A removal outside the vault that stopped inside a folder leaves a part of
+# it: fewer entries than the vault's whole copy, each with the same content.
+# The next open finishes that removal. An entry the vault's copy lacks is
+# still a clash, and nothing moves.
+test_open_finishes_a_removal_that_stopped_inside_a_folder() {
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 proj vault out rc=0
+    proj=$(_plain_conversation enc "$id" "moved before")
+    vault=$(_vault_projects enc)
+    mkdir -p "$proj/$id/subagents" "$vault/$id/subagents"
+    cp -p "$proj/$id.jsonl" "$vault/$id.jsonl"
+    echo "agent a" > "$vault/$id/subagents/agent-a.jsonl"
+    echo "agent b" > "$vault/$id/subagents/agent-b.jsonl"
+    echo "agent b" > "$proj/$id/subagents/agent-b.jsonl"
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the open reaches claude: $out" || return 1
+    assert_output_not_contains "$out" "is in the vault too" "a part of what the vault holds whole is no clash" || return 1
+    [ ! -e "$proj" ] || { echo "  FAIL: plaintext conversations left at $proj"; return 1; }
+    assert_eq "agent-a.jsonl agent-b.jsonl" "$(ls "$vault/$id/subagents" | tr '\n' ' ' | sed 's/ $//')" "the vault keeps its whole folder" || return 1
+    assert_output_contains "$out" "enc: removed from $proj what its vault already holds: $id $id.jsonl.$" "names what it removed outside" || return 1
+
+    mkdir -p "$proj/$id/subagents"
+    echo "agent b" > "$proj/$id/subagents/agent-b.jsonl"
+    echo "agent c" > "$proj/$id/subagents/agent-c.jsonl"
+    rc=0
+    out=$(_open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the second open goes on: $out" || return 1
+    assert_output_contains "$out" "enc: $proj/$id is in the vault too, as .cs/claude-config/projects/${proj##*/}/$id, so cs moved none of the conversations in $proj. Keep the copy you want in the vault, remove the other, then reopen." "an entry the vault lacks is a clash" || return 1
+    assert_eq "agent c" "$(cat "$proj/$id/subagents/agent-c.jsonl" 2>/dev/null)" "and stays outside, untouched" || return 1
+    [ ! -e "$vault/$id/subagents/agent-c.jsonl" ] || { echo "  FAIL: the clashing folder was merged into the vault"; return 1; }
 }
 
 # SessionEnd leaves a waiter that detaches the vault once the lead claude
@@ -1078,10 +2019,10 @@ _end_conversation() {  # name reason claude_pid lead_pid
 # The waiter is detached and acts once the lead has exited, later on a loaded
 # machine, so these wait on what it leaves behind; non-zero only at the guard.
 _log_is() {  # expected
-    [ "$(cat "$FAKE_HDIUTIL_LOG")" = "$1" ]
+    [ "$(cat "$FAKE_DISKUTIL_LOG")" = "$1" ]
 }
 
-_wait_for_log() {  # expected -> waits until the hdiutil log reads exactly that
+_wait_for_log() {  # expected -> waits until the diskutil log reads exactly that
     wait_until _log_is "$1"
 }
 
@@ -1096,10 +2037,10 @@ test_session_end_detaches_after_the_lead_exits() {
     _end_conversation enc prompt_input_exit "$claude" "$claude"
     [ -s "$CS_SESSIONS_ROOT/enc/.cs/local/vault-waiter.pid" ] || { kill "$claude"; echo "  FAIL: no waiter recorded"; return 1; }
     sleep 1.5
-    local early; early=$(cat "$FAKE_HDIUTIL_LOG")
+    local early; early=$(cat "$FAKE_DISKUTIL_LOG")
     kill "$claude" 2>/dev/null; wait "$claude" 2>/dev/null
     assert_eq "" "$early" "no detach while claude still runs" || return 1
-    _wait_for_log "detach $FAKE_MNT" || { echo "  FAIL: no detach after exit: $(cat "$FAKE_HDIUTIL_LOG")"; return 1; }
+    _wait_for_log "eject $FAKE_MNT" || { echo "  FAIL: no detach after exit: $(cat "$FAKE_DISKUTIL_LOG")"; return 1; }
     _waiter_gone enc || { echo "  FAIL: waiter pid file left"; return 1; }
 }
 
@@ -1114,7 +2055,7 @@ test_session_end_detach_pid_does_not_follow_a_link() {
     local claude=$!
     _end_conversation enc prompt_input_exit "$claude" "$claude"
     kill "$claude" 2>/dev/null; wait "$claude" 2>/dev/null
-    _wait_for_log "detach $FAKE_MNT" || { echo "  FAIL: no detach after exit: $(cat "$FAKE_HDIUTIL_LOG")"; return 1; }
+    _wait_for_log "eject $FAKE_MNT" || { echo "  FAIL: no detach after exit: $(cat "$FAKE_DISKUTIL_LOG")"; return 1; }
     _waiter_gone enc || { echo "  FAIL: waiter pid file left"; return 1; }
     assert_eq "USER-OWNED" "$(cat "$t/victim")" "the link's target is untouched" || return 1
 }
@@ -1132,7 +2073,7 @@ test_session_end_leaves_the_vault_for_clear_resume_and_non_leads() {
         [ ! -e "$CS_SESSIONS_ROOT/enc/.cs/local/vault-waiter.pid" ] || { echo "  FAIL: waiter started for $case_"; return 1; }
     done
     sleep 1.5
-    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "no detach for clear, resume or a non-lead" || return 1
+    assert_eq "" "$(cat "$FAKE_DISKUTIL_LOG")" "no detach for clear, resume or a non-lead" || return 1
 }
 
 test_session_end_ignores_a_session_cs_did_not_encrypt() {
@@ -1144,7 +2085,7 @@ test_session_end_ignores_a_session_cs_did_not_encrypt() {
     kill "$claude" 2>/dev/null; wait "$claude" 2>/dev/null
     sleep 1.5
     [ ! -e "$CS_SESSIONS_ROOT/enc/.cs/local/vault-waiter.pid" ] || { echo "  FAIL: waiter started"; return 1; }
-    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "no detach" || return 1
+    assert_eq "" "$(cat "$FAKE_DISKUTIL_LOG")" "no detach" || return 1
 }
 
 # While git tracks .cs/local the waiter still detaches the vault when claude
@@ -1163,7 +2104,7 @@ test_session_end_waiter_records_nothing_while_git_tracks_the_control_files() {
     changed=$(git -C "$s" status --porcelain --ignored -- .cs/local)
     kill "$claude" 2>/dev/null; wait "$claude" 2>/dev/null
     assert_eq "" "$changed" "no waiter pid lands in the tracked .cs/local" || return 1
-    _wait_for_log "detach $FAKE_MNT" || { echo "  FAIL: no detach after exit: $(cat "$FAKE_HDIUTIL_LOG")"; return 1; }
+    _wait_for_log "eject $FAKE_MNT" || { echo "  FAIL: no detach after exit: $(cat "$FAKE_DISKUTIL_LOG")"; return 1; }
     sleep 0.5
     changed=$(git -C "$s" status --porcelain --ignored -- .cs/local)
     assert_eq "" "$changed" "nor a detach pid once the waiter has run" || return 1
@@ -1180,7 +2121,7 @@ test_session_end_waiter_spares_a_reopened_session() {
     kill "$claude" 2>/dev/null; wait "$claude" 2>/dev/null
     _waiter_gone enc || { kill "$reopened"; echo "  FAIL: waiter still running"; return 1; }
     kill "$reopened" 2>/dev/null; wait "$reopened" 2>/dev/null
-    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "the new conversation keeps its mount" || return 1
+    assert_eq "" "$(cat "$FAKE_DISKUTIL_LOG")" "the new conversation keeps its mount" || return 1
 }
 
 # The waiter reads the lock by live_lock_pid's rule: a lock of "-1", "0" or
@@ -1190,14 +2131,14 @@ test_session_end_waiter_reads_the_lock_by_the_one_lock_rule() {
     _encrypted_session enc || return 1
     local text claude
     for text in "-1" "0" "+$$"; do
-        : > "$FAKE_HDIUTIL_LOG"
+        : > "$FAKE_DISKUTIL_LOG"
         sleep 300 &
         claude=$!
         _end_conversation enc prompt_input_exit "$claude" "$claude"
         printf '%s\n' "$text" > "$CS_SESSIONS_ROOT/enc/.cs/session.lock"
         kill "$claude" 2>/dev/null; wait "$claude" 2>/dev/null
         _waiter_gone enc || { echo "  FAIL: waiter still running over a lock of '$text'"; return 1; }
-        assert_eq "detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "a lock of '$text' does not keep the vault mounted" || return 1
+        assert_eq "eject $FAKE_MNT" "$(cat "$FAKE_DISKUTIL_LOG")" "a lock of '$text' does not keep the vault mounted" || return 1
     done
 }
 
@@ -1221,7 +2162,7 @@ test_session_end_waiter_without_the_lock_rule_keeps_the_vault() {
     [ -s "$CS_SESSIONS_ROOT/enc/.cs/local/vault-waiter.pid" ] || { kill "$claude"; echo "  FAIL: no waiter recorded"; return 1; }
     kill "$claude" 2>/dev/null; wait "$claude" 2>/dev/null
     _waiter_gone enc || { echo "  FAIL: waiter still running"; return 1; }
-    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "the vault stays mounted" || return 1
+    assert_eq "" "$(cat "$FAKE_DISKUTIL_LOG")" "the vault stays mounted" || return 1
 }
 
 test_session_end_waiter_spares_a_vault_a_holder_keeps() {
@@ -1235,17 +2176,17 @@ test_session_end_waiter_spares_a_vault_a_holder_keeps() {
     _end_conversation enc prompt_input_exit "$claude" "$claude"
     _waiter_gone enc || { kill "$holder"; echo "  FAIL: waiter still running"; return 1; }
     kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
-    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "no detach while a holder lives" || return 1
+    assert_eq "" "$(cat "$FAKE_DISKUTIL_LOG")" "no detach while a holder lives" || return 1
 }
 
 test_session_end_waiter_leaves_a_busy_vault_mounted() {
     _encrypted_session enc || return 1
     sleep 300 &
     local claude=$!
-    FAKE_HDIUTIL_FAIL=detach _end_conversation enc prompt_input_exit "$claude" "$claude"
+    FAKE_DISKUTIL_FAIL=eject _end_conversation enc prompt_input_exit "$claude" "$claude"
     kill "$claude" 2>/dev/null; wait "$claude" 2>/dev/null
     _waiter_gone enc || { echo "  FAIL: waiter still running"; return 1; }
-    assert_eq "detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "one plain detach, never -force" || return 1
+    assert_eq "eject $FAKE_MNT" "$(cat "$FAKE_DISKUTIL_LOG")" "one plain detach, never -force" || return 1
 }
 
 run_test test_encrypt_refuses_off_macos
@@ -1261,6 +2202,7 @@ run_test test_encrypt_refuses_an_existing_container
 run_test test_encrypt_refuses_an_existing_container_under_cs_data_dir
 run_test test_encrypt_refuses_a_relative_cs_data_dir
 run_test test_encrypt_builds_the_vault_and_detaches
+run_test test_encrypt_moves_claude_transcripts_from_the_fork_profile
 run_test test_encrypt_names_the_shared_codex_home_from_inside_a_vault
 run_test test_encrypt_removes_the_plaintext_codex_context
 run_test test_encrypt_removes_the_plaintext_antigravity_rule
@@ -1271,14 +2213,18 @@ run_test test_encrypt_removes_leftover_codex_context_temp_files
 run_test test_encrypt_refuses_a_codex_context_leftover_that_is_not_a_file
 run_test test_encrypt_names_a_leftover_with_escapes_in_plain_text
 run_test test_encrypt_names_a_leftover_it_cannot_delete_in_plain_text
+run_test test_encrypt_names_a_linked_conversations_folder_it_leaves
 run_test test_encrypt_builds_a_session_never_opened_on_this_machine
 run_test test_encrypt_builds_the_container_under_cs_data_dir
+run_test test_encrypt_prompt_follows_a_light_terminal
 run_test test_encrypt_holds_the_session_lock_while_it_works
 run_test test_encrypt_releases_the_session_lock_when_it_stops
 run_test test_encrypt_releases_the_lock_under_a_root_with_quotes
 run_test test_encrypt_refuses_an_open_that_took_the_lock_after_its_check
 run_test test_encrypt_refuses_while_the_openers_mutex_stays_held
 run_test test_encrypt_refuses_a_readme_it_cannot_tag
+run_test test_encrypt_names_what_it_could_not_remove_outside_the_vault
+run_test test_encrypt_refuses_passwords_that_differ_or_are_empty
 run_test test_encrypt_stops_when_create_fails
 run_test test_encrypt_stops_when_attach_fails
 run_test test_encrypt_stops_on_a_failed_move_and_names_what_moved
@@ -1292,6 +2238,12 @@ run_test test_pre_open_refuses_a_leftover_mount_that_will_not_detach
 run_test test_pre_open_refuses_without_a_terminal
 run_test test_pre_open_attaches_with_a_prompt
 run_test test_pre_open_attaches_the_recorded_container_whatever_cs_data_dir_says
+run_test test_pre_open_shows_its_prompt_and_only_diskutil_errors
+run_test test_pre_open_asks_again_after_a_wrong_password
+run_test test_open_draws_the_vault_prompt_cs_hands_the_hook
+run_test test_open_ends_quietly_when_the_pre_open_was_cancelled
+run_test test_open_replaces_a_pre_open_another_cs_wrote
+run_test test_open_keeps_an_earlier_pre_open_where_diskutil_has_no_image_verbs
 run_test test_open_that_stops_detaches_the_vault_it_mounted
 run_test test_open_refuses_a_plaintext_codex_context_beside_the_vault
 run_test test_open_refuses_a_leftover_codex_context_temp_file_beside_the_vault
@@ -1305,6 +2257,35 @@ run_test test_open_handing_off_to_the_session_manager_leaves_the_holders
 run_test test_open_resuming_keeps_the_vault_while_claude_runs
 run_test test_open_fresh_detaches_after_claude_exits
 run_test test_first_open_detaches_after_claude_exits
+run_test test_open_moves_conversations_left_outside_the_vault
+run_test test_open_moves_conversations_beside_those_in_the_vault
+run_test test_open_moves_nothing_when_a_conversation_is_on_both_sides
+run_test test_open_moves_nothing_through_a_linked_conversations_folder
+run_test test_open_moves_nothing_while_a_claude_writes_outside_the_vault
+run_test test_open_leaves_no_cut_conversation_in_a_vault_without_room
+run_test test_encrypt_leaves_no_cut_conversation_in_a_vault_without_room
+run_test test_open_removes_a_copy_outside_that_the_vault_already_holds
+run_test test_open_names_what_it_could_not_remove_outside_the_vault
+run_test test_open_names_as_removed_only_what_went
+run_test test_open_moves_a_folder_over_an_empty_one_in_the_vault
+run_test test_open_says_it_moved_conversations_only_when_it_moved_one
+run_test test_open_moves_nothing_while_another_cs_holds_the_openers_mutex
+run_test test_open_moves_past_a_claude_file_whose_pid_names_another_process
+run_test test_encrypt_leaves_conversations_a_running_claude_writes
+run_test test_open_moves_nothing_from_a_folder_another_path_shares
+run_test test_encrypt_moves_nothing_from_a_folder_another_path_shares
+run_test test_open_reads_the_escaped_path_of_a_conversation_sharing_the_folder
+run_test test_open_reads_the_escaped_path_of_a_running_claude
+run_test test_open_moves_nothing_past_a_running_process_file_it_cannot_read
+run_test test_open_moves_past_a_cut_file_older_than_the_process_with_its_pid
+run_test test_encrypt_leaves_conversations_past_an_empty_running_process_file
+run_test test_open_moves_nothing_while_a_claude_that_changed_folder_writes
+run_test test_open_moves_nothing_from_a_folder_a_path_of_another_case_shares
+run_test test_open_moves_nothing_from_a_folder_it_cannot_read
+run_test test_encrypt_moves_nothing_from_a_folder_it_cannot_read
+run_test test_open_moves_nothing_from_a_folder_it_cannot_enter
+run_test test_open_claims_no_whole_copy_of_a_folder_it_cannot_enter
+run_test test_open_finishes_a_removal_that_stopped_inside_a_folder
 run_test test_session_end_detaches_after_the_lead_exits
 run_test test_session_end_detach_pid_does_not_follow_a_link
 run_test test_session_end_leaves_the_vault_for_clear_resume_and_non_leads

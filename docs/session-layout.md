@@ -165,7 +165,7 @@ removes anything, except the prompt hook's launch mark in `scope-prompt.trace`.
 | File | Purpose |
 |------|---------|
 | `session.log` | Human-readable audit trail — session lifecycle, tool failures, autosave notes, UUID rebinds. Per-checkout by nature; the shared structured record is `timeline.jsonl`. |
-| `state` | Session state bound to this checkout: `claude_session_id` (the conversation UUID to resume), `claude_session_color` (the `/color` palette entry), `last_resumed` (last resume date), `session_name` for adopted sessions only (their name lives in the sessions-root symlink, which a hook resolving the directory has no way to read; an ordinary session takes its name from its directory), and, for feature worktrees, `task_branch`, `cs_base` and `cs_mode` (`tracked` when the base repo tracks `.cs/`, `ignored` when it does not; it decides how the worktree's records reach the base when the feature is integrated and retired). An adopted session records `cs_mode` too, the mode its features take, and so does a flat-layout session in a git repo once the open moves it into `.cs/`. Neither `cs -adopt` nor that open commits anything, so each writes `ignored` when the project's own rules already ignore the `.cs/` directory, and `tracked` otherwise (you may commit `.cs/` later); a `cs_mode` already in the file stays. With `tracked`, cs refuses a feature while git tracks nothing under the base's `.cs/`, until you commit it or change the line to `cs_mode: ignored`, which keeps `.cs/` out of git and has each feature hide it through `.git/info/exclude`. Once git tracks `.cs/` a feature is `tracked` whatever the line says, and a base with no `cs_mode` (one cs created, or one adopted or moved into `.cs/` before cs wrote the line) has the mode inferred from whether git tracks `.cs/`. While git tracks nothing under `.cs/`, a `cs_mode` that is neither `tracked` nor `ignored` refuses a feature, naming the line to fix. Each machine binds its own conversation, so this must not sync. Writers take turns on `state.mutex.lock` beside it. `claude_session_id` is one slot, written only by the conversation `cs` launched — see [hooks.md](hooks.md) for how a teammate or walked-in claude is kept out of it. |
+| `state` | Session state bound to this checkout: `claude_session_id` (the conversation UUID to resume), `claude_session_color` (the `/color` palette entry), `last_resumed` (last resume date), `session_name` for adopted sessions only (their name lives in the sessions-root symlink, which a hook resolving the directory has no way to read; an ordinary session takes its name from its directory), and, for feature worktrees, `task_branch`, `cs_base` and `cs_mode` (`tracked` when the base repo tracks `.cs/`, `ignored` when it does not; it decides how the worktree's records reach the base when the feature is integrated and retired). With `tracked`, what the feature committed under `.cs/` lands through the integrate's merge, and the retire fuses what it left uncommitted there into the base's working tree, uncommitted, as the difference from the feature's last commit; with `ignored`, the retire fuses the whole of the feature's `.cs/`. An adopted session records `cs_mode` too, the mode its features take, and so does a flat-layout session in a git repo once the open moves it into `.cs/`. Neither `cs -adopt` nor that open commits anything, so each writes `ignored` when the project's own rules already ignore the `.cs/` directory, and `tracked` otherwise (you may commit `.cs/` later); a `cs_mode` already in the file stays. With `tracked`, cs refuses a feature while git tracks nothing under the base's `.cs/`, until you commit it or change the line to `cs_mode: ignored`, which keeps `.cs/` out of git and has each feature hide it through `.git/info/exclude`. Once git tracks `.cs/` a feature is `tracked` whatever the line says, and a base with no `cs_mode` (one cs created, or one adopted or moved into `.cs/` before cs wrote the line) has the mode inferred from whether git tracks `.cs/`. While git tracks nothing under `.cs/`, a `cs_mode` that is neither `tracked` nor `ignored` refuses a feature, naming the line to fix. Each machine binds its own conversation, so this must not sync. Writers take turns on `state.mutex.lock` beside it. `claude_session_id` is one slot, written only by the conversation `cs` launched — see [hooks.md](hooks.md) for how a teammate or walked-in claude is kept out of it. |
 | `run-lease.json` | Current launcher run token, engine, owning process, and registered native child with its process start time; supplements the compatible numeric `.cs/session.lock`. Hooks validate ownership before rebinding. |
 | `run-lease.guard` | Persistent inode for serialized lease replacement, cleanup, and binding acknowledgement. Do not unlink while launches are active. cs creates it with O_EXCL and opens it read-only, so it never creates, truncates or writes a file through a symlink, and refuses it, running nothing, when the path is a symlink or anything but a regular file, or when the file it opened is not the one the path names or cannot be checked to be. A hard link there to a file outside passes: that file is only opened read-only and locked. Only that last component is checked: a symlink put in place of `.cs/local` itself is followed, by this guard as by every cs write under `.cs/`. |
 | `pending-binding-<engine>.json` | Candidate conversation ID, previous ID, run token, and transition reason awaiting native acknowledgement. Unacknowledged candidates superseded by retries remain in `.abandoned.*` records for diagnosis. |
@@ -193,7 +193,7 @@ removes anything, except the prompt hook's launch mark in `scope-prompt.trace`.
 | `vault` | The path of the container `cs -encrypt` built, written only by `cs -encrypt`. The SessionEnd hook unmounts the vault only when this file exists. |
 | `vault-holders` | Process ids of every `cs` run that mounted or joined this session's vault. The volume unmounts only when none of them and no session lock is alive. A `cs` that adds or drops its line takes turns with the others through `vault-holders.mutex.lock`. |
 | `vault-waiter.pid` | The background waiter the SessionEnd hook leaves to unmount the vault once the lead conversation's Claude Code exits. An open that finds the vault mounted with nothing alive behind it stops this waiter first. |
-| `vault-detach.pid` | The `hdiutil detach` that waiter started, so a reopen can stop an unmount in flight. |
+| `vault-detach.pid` | The `diskutil eject` that waiter started, so a reopen can stop an unmount in flight. |
 | `queue/` | The walk-away task queue (`cs -queue`): one file per task, staged in `queue.tmp/` and renamed into place so the drain never reads a torn entry. The drain hands out the lexically first file and records its name in `queue.current`. When that task's turn ends, the drain pops the file `queue.current` names by moving it aside, so a second drain that races it loses the rename. |
 | `queue.state` | Drain state machine for the queue: `idle`, `armed`, or `draining`. [Queue states and transitions](#queue-states-and-transitions) lists what writes and reads it. |
 | `queue.mode` | How a started run hands over its tasks: `subagents` or `workflow`; absent runs them in the conversation. Written by `cs -queue start` with a mode. Removed by `cs -queue start` without one, by `cs -queue clear`, and by the drain when the run finishes. A run that parks for any reason, or loses its pop, keeps it until the next `cs -queue start` or `cs -queue clear`. The open of a `cs -spawn`ed session arms the queue without touching this file, so that run hands over its tasks in whatever mode the file still holds. |
@@ -283,7 +283,9 @@ there.
 On macOS, `cs -encrypt <name>` sets this up for an existing session. Run it
 from a terminal, with the session closed. It:
 
-1. Deletes `.cs/local/codex-instructions.md`, a plaintext copy of memory the
+1. Asks for a new vault password, twice, and stops if the two differ or are
+   empty.
+2. Deletes `.cs/local/codex-instructions.md`, a plaintext copy of memory the
    next Codex open writes again inside the vault, and the temp copies a Codex
    launch interrupted while it wrote that file left beside it
    (`.cs/local/.codex-instructions.*`, or `codex-instructions.md.tmp.*` from an
@@ -292,23 +294,42 @@ from a terminal, with the session closed. It:
    `.agents/rules/cs-session.md` when cs wrote it: the Antigravity launch's
    copy of the same context, which the next Antigravity open writes into the
    vault instead.
-2. Creates an AES-256 encrypted sparse bundle at
+3. Creates an AES-256 encrypted sparse bundle at
    `~/.local/share/cs/vaults/<name>.sparsebundle` (`$CS_DATA_DIR/vaults/` when
-   that is set, as the code-sessions profile sets it) with `hdiutil`, which asks
-   for a new password. The bundle grows as it fills, up to 50 GB. It lives
-   outside the session directory, so `cs -rm` never deletes it.
-3. Mounts it at `.cs/vault-mnt` (`hdiutil` asks for the password again) and
-   turns Spotlight indexing off for it.
-4. Moves `.cs/memory`, `.cs/plans`, the other `.cs/local/` files listed under
+   set) with `diskutil image create`.
+   The bundle grows as it fills, up to 50 GB. It lives outside the session
+   directory, so `cs -rm` never deletes it.
+4. Mounts it at `.cs/vault-mnt` with `diskutil image attach` and turns
+   Spotlight indexing off for it. cs passes the password to `diskutil` on
+   stdin both times, never as an argument, and shows `diskutil`'s output only
+   when a step fails.
+5. Moves `.cs/memory`, `.cs/plans`, the other `.cs/local/` files listed under
    `.cs/private` above, and `.cs/handoffs`, `.cs/checkpoints` and
-   `.cs/narrative-archive` into the volume, then links the four names into it.
-5. Writes `.cs/local/pre-open` and `.cs/local/vault` (the bundle's path, which
-   every later open attaches whatever `CS_DATA_DIR` says), tags
-   the session `encrypted`, and unmounts the volume.
+   `.cs/narrative-archive` into the volume.
+6. Moves the session's conversations from your Claude Code config dir
+   (`projects/<session path>/` under `$CLAUDE_CONFIG_DIR`, or `~/.claude`)
+   into the volume's `claude-config/projects/`, where the encrypted session's
+   Claude Code reads them, so the last conversation still resumes. Then it
+   links the four names into the volume.
+7. Writes `.cs/local/pre-open` and `.cs/local/vault` (the bundle's path, which
+   every later open attaches whatever `CS_DATA_DIR` says), tags the session
+   `encrypted`, and unmounts the volume with `diskutil eject`.
 
-From then on every open asks for the password in the terminal. `pre-open`
-refuses to open the session without a terminal, because without one `hdiutil`
-shows a dialog that offers to save the password in the keychain. When the lead
+`cs -encrypt` needs a macOS whose `diskutil` has the `image` verbs (checked
+on macOS 27.2). Without them, the create step stops before moving any private
+files. A vault that an earlier cs built with `hdiutil` opens the same way:
+each open replaces a `pre-open` that cs wrote with the current one,
+written from the path in `.cs/local/vault`, and leaves one written by hand
+alone. To move a bundle, change the path in that file, not in `pre-open`. Where
+`diskutil` has no `image` verbs, the open keeps the `pre-open` it finds.
+
+From then on every open asks for the password in the terminal: cs asks, and
+passes the answer to `diskutil image attach` on stdin. The prompt shows the
+session as the status line does, with `vault locked` beside it and a
+`password ›` row under it. cs asks up to three times when the password is
+wrong; an empty one, or Ctrl-C at the prompt, ends the open. `pre-open` refuses to
+open the session without a terminal, because `diskutil`, left to ask, shows a
+dialog that offers to save the password in the keychain. When the lead
 conversation ends (not on `/clear` or `/resume`), the SessionEnd hook waits for
 Claude Code to exit and unmounts the volume, unless the session reopened in
 the meantime. The unmount is never forced: if something still holds the
@@ -322,6 +343,71 @@ one that names no running process (a pid that has ended, `0`), it joins
 only a volume a listed holder keeps, and otherwise unmounts the volume and
 asks for the password. An open that stops before Claude Code starts
 (a refusal, or a cancelled prompt) unmounts the volume it mounted.
+
+A session encrypted before cs moved conversations into the vault still keeps
+them in your config dir's `projects/<session path>/`, where its Claude Code no
+longer looks. The first open with the vault mounted moves them into the volume's
+`claude-config/projects/` before it works out which conversation to continue,
+and prints `<name>: moved this session's conversations from <folder> into its
+vault.` It prints that line only when a conversation moved: cs removes a folder that
+held only empty folders (Claude Code makes an empty `memory/` in every project
+folder) without a word, and names anything else that moved.
+
+The move, at an open and in `cs -encrypt`, copies every entry to a staging folder
+on the volume, `claude-config/projects.cs-moving.<pid>`, renames each into the
+session's folder once the last copy ends, and only then removes what is outside. If
+the copy stops, as on a full disk, cs removes the staging folder, the
+conversations outside are whole, the vault holds none of them cut short, and cs
+stops and says so. If the removal stops, the vault holds whole copies: cs names
+the folder whose contents are still in plain text and goes on. The next open
+finishes that removal. An entry outside is no clash when the volume's entry of
+that name holds everything in it: the same file, or a folder whose every entry the
+volume's folder holds too. A folder that the removal emptied only in part counts,
+so cs removes what is outside and prints `<name>: removed from <folder> what
+its vault already holds: <names>.` That line names only what cs removed. An
+empty folder on either side is no clash
+either. The open runs the move under the lock that serialises opens of one
+session, so a second open started beside the first finds nothing left to move;
+an open that cannot take that lock within five seconds stops and asks you to
+try again.
+
+cs moves nothing, says why and goes on in these cases:
+
+- The folder is a link. The open warns at every open.
+- An entry outside is in the volume too, and holds something that the volume's
+  entry does not (the open only).
+- Claude Code lists a running claude in `sessions/<pid>.json` under your config
+  dir that writes to the folder: its working directory is the session, or its
+  `sessionId` names a conversation in the folder. The working directory there is
+  the folder the claude started in: a `cd` leaves it unchanged, and only entering
+  or leaving a worktree rewrites it, while a resumed conversation stays in its
+  own folder. A claude resumed in the session that then entered a worktree has
+  its working directory elsewhere, so cs reads both. cs compares the start time
+  recorded there with the process the pid names now, so a file that a killed
+  claude left behind does not hold the move back once another process has its
+  pid. Claude Code writes the file in place, so cs reads one it cannot read a
+  second time after a pause, and skips one last written more than two seconds
+  before the process its pid names started. A file still unreadable and no older
+  than its process holds the move back, because it rules no claude out: cs names
+  it and ends with `jq said: <jq's words>` or `The file holds no JSON value.`
+  The next open moves the conversations once that process has ended.
+- cs cannot list or cannot enter a folder under the conversations folder, or
+  under the session's folder in the volume. A folder it cannot list would read
+  as an empty one, and one it cannot enter can be neither copied nor compared,
+  so cs names the first such folder (`cs cannot list <folder>.` or `cs cannot
+  enter <folder>.`) and moves nothing until it can read every folder.
+- The folder holds a conversation of another path. Claude Code names the folder
+  after the path with every character that is not a letter or digit turned into
+  `-`, so session `foo-bar` and a claude run in `foo/bar` share one folder.
+  Where the filesystem takes names that differ only in letter case as
+  one, as a Mac's disk does unless formatted otherwise, `foo-bar` and `Foo/bar` share
+  one too. cs reads the working directory each conversation recorded, names the
+  conversation that belongs to the other path, and leaves the whole folder
+  outside the vault, in plain text, until you move that conversation away.
+
+`cs -encrypt` finishes in each of these cases, and its closing list of what is
+still in plain text names the one that applied. The list also names what cs
+could not remove from outside once the vault held whole copies.
 
 Every open that mounts or joins the volume adds its process id to
 `.cs/local/vault-holders`. A process that replaces itself with Claude Code
@@ -342,13 +428,15 @@ for the password.
 - the bundle already exists
 - `.cs/README.md` has no frontmatter for the tag
 
-If a move fails partway, it stops, lists what moved and what did not, and
-leaves the volume mounted so you can finish by hand; until you unmount it,
+If a `.cs/` move fails partway, it stops, lists what moved and what did not, and
+leaves the volume mounted so you can finish by hand. The conversations move
+last: if that move fails, it lists what has moved and leaves the volume
+mounted, since the volume may then hold the only whole copy of them. Until you unmount it,
 `cs -rm` and the picker's delete refuse to remove the session. When it finishes, it lists
-the copies it cannot reach: the session's transcripts in `projects/` and its
+what is still in plaintext from before: conversations started from another folder (a subfolder of the session, say) in `projects/` and the session's
 lines in `history.jsonl` under your Claude Code config dir (`$CLAUDE_CONFIG_DIR`,
 else `~/.claude`), its entries in `.claude.json` (inside `$CLAUDE_CONFIG_DIR`
-when you set it, else `~/.claude.json`) and that file's backups, the session's Codex conversations in the shared Codex home (rollouts, `history.jsonl` and `session_index.jsonl` lines, state-database rows and its `cs-rotation-*.config.toml`), `.cs/summary.md` and `.cs/brief.md`, git history, and backups.
+when you set it, else `~/.claude.json`) and that file's backups, what else Claude Code kept for its conversations there (`file-history/`, `tasks/`, `debug/`, `paste-cache/`), the session's Codex conversations in the shared Codex home (rollouts, history and index lines, state-database rows, and its `cs-rotation-*.config.toml`), its Antigravity conversations in the shared Antigravity home, git history, and backups, and, when the session's conversations folder is a link, that link and the folder it points to, which `cs -encrypt` leaves where they are. It lists `.cs/summary.md` and `.cs/brief.md` apart, as files that always stay in plaintext.
 
 ### Setting it up by hand
 
@@ -451,7 +539,11 @@ conflict-free:
 - `merge=ours` — `MEMORY.md`: the index is regenerated, so a machine keeps its
   own version rather than conflicting. `/finish` then appends each feature
   pointer whose target neither the base index nor its memory archive names,
-  once per target.
+  once per target. When the feature merged the base in and so took its own
+  index over the base's, `/finish` lands the feature's index with each base
+  pointer it lacks appended, and says how many. A base pointer stays out
+  when the landed tree has no such topic file, or the landed memory archive
+  holds the pointer: the feature deleted the topic or archived the pointer.
 
 cs counts each of these lines as present only as a whole line, so where an
 earlier append glued one onto the line before, cs appends it again on a line
@@ -462,6 +554,45 @@ In a session whose `.gitignore` lists `.cs`, git merges none of these, and
 and gains each feature pointer whose target it does not name, and a base with
 no archive takes the feature's whole. A feature that never changed the
 archive it inherited brings nothing back, so the base's deletions stand.
+
+The landing fast-forwards the base, which git refuses over an uncommitted
+change to a file the feature also changed. For `timeline.jsonl` and
+`narrative.*.md`, `/finish` sets the lines the base holds past its last
+commit aside, lands, and appends them after the feature's, uncommitted. It
+refuses, naming the paths, for any other record, and for a log whose
+committed lines the base changed. Two known limits: the landing loses a line another writer appends to one of
+these files in the moment between the set-aside and the fast-forward, and
+lines the base had staged come back unstaged.
+
+Git merges only what the feature committed. The retire commits nothing, so
+when `/finish` retires a feature whose base tracks `.cs/`, it fuses what
+the feature left uncommitted under `.cs/` into the base's working tree and
+leaves it there uncommitted, for you to commit with the base's own records:
+
+- `timeline.jsonl`: the base's file gains the lines after the feature's
+  last commit.
+- `narrative.*.md`: the same, and after `cs -narrative rotate` in the
+  feature, the lines the feature added to those of its last commit.
+- `MEMORY.md` and `reference_memory_archive.md`: the base's copy gains each
+  pointer whose target it does not name.
+- `README.md` and `summary.md`: the feature's copy goes to
+  `.cs/features/<task>/`, and the base's own stays.
+- Any other file under `.cs/` (a plan, a narrative archive section, a memory
+  entry): copied when the base has no such file. When the base holds the
+  version of the feature's last commit, as it does after a landing, the
+  feature's version replaces it and the retire names the file. The base
+  keeps a file it already holds with the same contents.
+
+The retire refuses, and removes nothing, when the feature deleted a tracked
+record without committing the deletion, rewrote `timeline.jsonl` instead of
+appending to it, or changed a file whose copy in the base is neither the
+version of the feature's last commit nor the same as the feature's.
+The refusal names each path and what to do with it.
+
+One known limit: after a worktree removal that fails part-way, a record line
+the feature had staged with `git add` can reach the base twice when you
+follow the printed steps, once fused by hand from the copy and once by the
+next `/finish`; the base loses no line.
 
 Human-authored prose (`README.md`, `summary.md`) uses the default merge — a
 genuine divergence there is a real conflict a person should reconcile. In a

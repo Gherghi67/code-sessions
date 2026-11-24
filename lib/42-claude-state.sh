@@ -20,24 +20,10 @@ _alloc_random_color() {
     echo "${CS_VALID_COLORS[$((RANDOM % ${#CS_VALID_COLORS[@]}))]}"
 }
 
-# Return the path to claude's per-cwd transcript directory. Symlinks in the
-# input are resolved via `pwd -P` so the encoding matches claude's own —
-# macOS mktemp returns /var/folders/... which is a symlink to
-# /private/var/folders/... and claude realpaths cwd before encoding.
-# A session with .cs/claude-config runs Claude Code on that config dir, so its
-# transcripts live in the dir's projects/. A dangling link (vault locked) still
-# names that base: the shared one never holds the session's conversations.
-# Otherwise CS_TRANSCRIPTS_DIR overrides the base for tests (also used by
-# doctor), then Claude Code's own config dir holds them: CLAUDE_CONFIG_DIR's
-# projects/, else ~/.claude/projects. A CLAUDE_CONFIG_DIR naming some
-# session's .cs/claude-config was inherited from a claude running in that
-# session and says nothing about this one, so the shell's own config dir,
-# which the launch keeps in CLAUDE_SECURESTORAGE_CONFIG_DIR (empty for
-# ~/.claude), stands in, as it does for the keybindings (_cs_keybindings_file)
-# and for the claude the launch starts (_export_session_claude_config), so a
-# lookup before that export and one after it read the same dir.
-_claude_project_dir() {
-    local cwd="$1" config="${CLAUDE_CONFIG_DIR:-}"
+# The Claude config used outside a session vault. A path inherited from
+# a vault launch resolves the same way as in _export_session_claude_config.
+_plain_claude_config_dir() {
+    local config="${CLAUDE_CONFIG_DIR:-}"
     case "$config" in
         */.cs/claude-config)
             if [ -n "${CODE_SESSIONS_HOME:-}" ]; then
@@ -47,12 +33,27 @@ _claude_project_dir() {
             fi
             ;;
     esac
-    local resolved base="${CS_TRANSCRIPTS_DIR:-${config:-$HOME/.claude}/projects}"
+    printf '%s\n' "${config:-$HOME/.claude}"
+}
+
+# Resolve symlinks before encoding the cwd, as Claude does. Vault migration
+# reads the source here, while CS_TRANSCRIPTS_DIR overrides it in fixtures.
+_plain_claude_project_dir() {  # cwd
+    local cwd="$1" resolved
     resolved=$( (cd -- "$cwd" 2>/dev/null && pwd -P) || printf '%s' "$cwd" )
+    printf '%s/%s\n' "${CS_TRANSCRIPTS_DIR:-$(_plain_claude_config_dir)/projects}" "$(_claude_encode_path "$resolved")"
+}
+
+# A session vault owns its Claude transcripts. Even a dangling config link
+# names that destination, so a locked vault cannot resolve to the shared home.
+_claude_project_dir() {  # cwd
+    local cwd="$1" resolved
     if [ -e "$cwd/.cs/claude-config" ] || [ -L "$cwd/.cs/claude-config" ]; then
-        base="$cwd/.cs/claude-config/projects"
+        resolved=$( (cd -- "$cwd" 2>/dev/null && pwd -P) || printf '%s' "$cwd" )
+        printf '%s/.cs/claude-config/projects/%s\n' "$cwd" "$(_claude_encode_path "$resolved")"
+    else
+        _plain_claude_project_dir "$cwd"
     fi
-    printf '%s/%s\n' "$base" "$(_claude_encode_path "$resolved")"
 }
 
 # Discover claude's most-recently-modified transcript UUID under a project
