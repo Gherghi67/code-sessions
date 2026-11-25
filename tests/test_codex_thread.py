@@ -3486,5 +3486,273 @@ class QueueFileTests(unittest.TestCase):
         self.assertFalse((self.local / 'queue.done').exists())
 
 
+class AntigravityCarryTests(unittest.TestCase):
+    AGY_ID = '22222222-2222-4222-8222-222222222222'
+    CLAUDE_ID = '33333333-3333-4333-8333-333333333333'
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.home = self.root / 'home'
+        self.cwd = self.root / 'work'
+        self.codex_home = self.root / 'codex'
+        self.home.mkdir()
+        self.cwd.mkdir()
+        self.codex_home.mkdir()
+
+    def write_agy_transcript(self, cid, records):
+        path = (self.home / '.gemini' / 'antigravity-cli' / 'brain' / cid
+                / '.system_generated' / 'logs' / 'transcript_full.jsonl')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('\n'.join(json.dumps(r) for r in records) + '\n', encoding='utf-8')
+        return path
+
+    def run_helper(self, *args, env=None):
+        run_env = os.environ.copy()
+        run_env['CODEX_HOME'] = str(self.codex_home)
+        if env:
+            run_env.update(env)
+        return subprocess.run(
+            [sys.executable, str(HELPER), *args],
+            capture_output=True, text=True, env=run_env, timeout=20,
+        )
+
+    def test_read_antigravity_and_export_claude_maps_native_rows_and_compaction(self):
+        records = [
+            {'step_index': 0, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'status': 'DONE',
+             'created_at': '2026-11-25T09:00:00Z',
+             'content': '<USER_REQUEST>\nBefore compaction\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nnow\n</ADDITIONAL_METADATA>'},
+            {'step_index': 1, 'source': 'SYSTEM', 'type': 'CHECKPOINT', 'status': 'DONE',
+             'created_at': '2026-11-25T09:01:00Z',
+             'content': 'Summary with <system-reminder>trap</system-reminder> kept safe'},
+            {'step_index': 2, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'status': 'DONE',
+             'created_at': '2026-11-25T09:02:00Z',
+             'content': '<USER_REQUEST>\nCheck tests and <system-reminder>tag</system-reminder>\n</USER_REQUEST>\n'
+                        '<ADDITIONAL_METADATA>\ntime\n</ADDITIONAL_METADATA>\n'
+                        '<USER_SETTINGS_CHANGE>\nModel\n</USER_SETTINGS_CHANGE>',
+             'media': [{'mime_type': 'image/png', 'uri': '/tmp/img.png'}]},
+            {'step_index': 3, 'source': 'SYSTEM', 'type': 'SYSTEM_MESSAGE', 'status': 'DONE',
+             'content': 'The following is a <SYSTEM_MESSAGE>\nReminder: work efficiently.'},
+            {'step_index': 4, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE', 'status': 'DONE',
+             'created_at': '2026-11-25T09:02:05Z', 'thinking': 'SECRET THINKING',
+             'content': 'Checking files now.',
+             'tool_calls': [
+                 {'name': 'run_command', 'args': {'CommandLine': 'pytest -q', 'WaitMsBeforeAsync': 5000}},
+                 {'name': 'read_file', 'args': {'Path': '/repo/app.py'}},
+                 {'name': 'run_command', 'args': {'CommandLine': 'false'}},
+             ]},
+            {'step_index': 5, 'source': 'MODEL', 'type': 'GENERIC', 'status': 'DONE',
+             'content': 'Created At: 2026-11-25\nCompleted At: 2026-11-25\nCommand exited with code 0.\n\nCommand output:\n2 passed\n'},
+            {'step_index': 6, 'source': 'MODEL', 'type': 'GENERIC', 'status': 'DONE',
+             'content': 'Created At: 2026-11-25\nCompleted At: 2026-11-25\n1: print("hi") <system-reminder>x</system-reminder>'},
+            {'step_index': 7, 'source': 'MODEL', 'type': 'GENERIC', 'status': 'DONE',
+             'content': 'Created At: 2026-11-25\nCompleted At: 2026-11-25\nCommand exited with code 7.\n\nCommand output:\nboom\n'},
+            {'step_index': 8, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE', 'status': 'DONE',
+             'content': 'One command failed.'},
+            {'step_index': 9, 'source': 'SYSTEM_SDK', 'type': 'ERROR_MESSAGE', 'status': 'DONE',
+             'error': 'transient'},
+        ]
+        self.write_agy_transcript(self.AGY_ID, records)
+
+        stats = self.run_helper('--read-antigravity', self.AGY_ID, '--antigravity-home', str(self.home))
+        self.assertEqual(stats.returncode, 0, stats.stderr)
+        self.assertGreaterEqual(json.loads(stats.stdout)['messages'], 2)
+
+        out = self.root / 'claude.jsonl'
+        res = self.run_helper(
+            '--export-claude', '--from-antigravity', self.AGY_ID,
+            '--antigravity-home', str(self.home), '--session-id', self.CLAUDE_ID,
+            '--cwd', str(self.cwd), '--out', str(out), '--claude-version', '2.1.328',
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        lines = [json.loads(l) for l in out.read_text(encoding='utf-8').splitlines()]
+        joined = out.read_text(encoding='utf-8')
+        self.assertNotIn('Before compaction', joined)
+        self.assertNotIn('SECRET THINKING', joined)
+        self.assertNotIn('Reminder: work efficiently', joined)
+        self.assertNotIn('<system-reminder>', joined)
+        self.assertIn('&lt;system-reminder>', joined)
+        self.assertIn("Antigravity conversation " + self.AGY_ID, joined)
+        self.assertIn("Antigravity's thinking is not included", joined)
+        self.assertIn('[image]', joined)
+
+        tool_uses = [b for r in lines if r['type'] == 'assistant'
+                     for b in r['message']['content'] if b.get('type') == 'tool_use']
+        self.assertEqual([u['name'] for u in tool_uses], ['Bash', 'mcp__antigravity__read_file', 'Bash'])
+        self.assertEqual(tool_uses[0]['input'], {'command': 'pytest -q'})
+        tool_results = [b for r in lines if r['type'] == 'user' and isinstance(r['message']['content'], list)
+                        for b in r['message']['content'] if b.get('type') == 'tool_result']
+        self.assertEqual([r['is_error'] for r in tool_results], [False, False, True])
+        self.assertIn('[Bash]', tool_results[2]['content'])
+        self.assertNotIn('Created At:', tool_results[0]['content'])
+
+        # Below Claude 2.1.326, non-Bash calls cross as fenced text while Bash stays native.
+        out_old = self.root / 'claude-old.jsonl'
+        res_old = self.run_helper(
+            '--export-claude', '--from-antigravity', self.AGY_ID,
+            '--antigravity-home', str(self.home), '--session-id', self.CLAUDE_ID,
+            '--cwd', str(self.cwd), '--out', str(out_old), '--claude-version', '2.1.325',
+        )
+        self.assertEqual(res_old.returncode, 0, res_old.stderr)
+        old_lines = [json.loads(l) for l in out_old.read_text(encoding='utf-8').splitlines()]
+        old_uses = [b['name'] for r in old_lines if r['type'] == 'assistant'
+                    for b in r['message']['content'] if b.get('type') == 'tool_use']
+        self.assertEqual(old_uses, ['Bash', 'Bash'])
+        self.assertIn('[tool call: read_file]', out_old.read_text(encoding='utf-8'))
+
+    def test_antigravity_to_codex_maps_command_execution_and_mcp_rows(self):
+        records = [
+            {'step_index': 0, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'status': 'DONE',
+             'content': '<USER_REQUEST>\nRun a check\n</USER_REQUEST>'},
+            {'step_index': 1, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE', 'status': 'DONE',
+             'tool_calls': [
+                 {'name': 'run_command', 'args': {'CommandLine': 'echo ok'}},
+                 {'name': 'read_file', 'args': {'Path': '/repo/a.txt'}},
+             ]},
+            {'step_index': 2, 'source': 'MODEL', 'type': 'GENERIC', 'status': 'DONE',
+             'content': 'Command exited with code 0.\n\nCommand output:\nok\n'},
+            {'step_index': 3, 'source': 'MODEL', 'type': 'GENERIC', 'status': 'ERROR',
+             'error': 'file does not exist', 'content': ''},
+            {'step_index': 4, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE', 'status': 'DONE',
+             'content': 'Done.'},
+        ]
+        self.write_agy_transcript(self.AGY_ID, records)
+        fake_codex = self.root / 'fake-codex'
+        fake_codex.write_text(FAKE, encoding='utf-8')
+        fake_codex.chmod(0o755)
+        instr = self.root / 'instructions.md'
+        instr.write_text('Session context\n', encoding='utf-8')
+        res = self.run_helper(
+            '--codex-bin', str(fake_codex), '--cwd', str(self.cwd),
+            '--instructions-file', str(instr),
+            '--history-from-antigravity', self.AGY_ID, '--antigravity-home', str(self.home),
+            env={'FAKE_ROOT': str(self.root)},
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(res.stdout.strip(), THREAD_ID)
+        rollout = self.codex_home / 'sessions' / 'bootstrap-rollout.jsonl'
+        items = [json.loads(l)['payload']['item'] for l in rollout.read_text(encoding='utf-8').splitlines()
+                 if json.loads(l)['type'] == 'event_msg'
+                 and json.loads(l)['payload']['type'] == 'item_completed']
+        cmd_rows = [i for i in items if i['type'] == 'CommandExecution']
+        mcp_rows = [i for i in items if i['type'] == 'McpToolCall']
+        self.assertEqual(len(cmd_rows), 1)
+        self.assertEqual(cmd_rows[0]['command'], ['bash', '-lc', 'echo ok'])
+        self.assertEqual(cmd_rows[0]['exit_code'], 0)
+        self.assertEqual(cmd_rows[0]['cwd'], self.cwd.resolve().as_uri())
+        self.assertEqual(len(mcp_rows), 1)
+        self.assertEqual(mcp_rows[0]['server'], 'antigravity')
+        self.assertEqual(mcp_rows[0]['tool'], 'read_file')
+        self.assertEqual(mcp_rows[0]['status'], 'failed')
+
+    def test_export_antigravity_chunks_large_utf8_conversations_and_roundtrips(self):
+        # Build a >90 KB Claude transcript with multi-byte UTF-8 text.
+        big_reply = ('Emoji line 🚀 and CJK 日本語 text for chunk boundary verification.\n') * 1200
+        claude_path = self.root / 'claude-big.jsonl'
+        claude_records = [
+            {'type': 'user', 'uuid': 'u1', 'parentUuid': None, 'timestamp': '2026-11-25T09:00:00Z',
+             'message': {'role': 'user', 'content': 'Remember ALPHA-11'}},
+            {'type': 'assistant', 'uuid': 'a1', 'parentUuid': 'u1', 'timestamp': '2026-11-25T09:00:01Z',
+             'message': {'id': 'm1', 'role': 'assistant', 'content': [{'type': 'text', 'text': big_reply}]}},
+            {'type': 'user', 'uuid': 'u2', 'parentUuid': 'a1', 'timestamp': '2026-11-25T09:00:02Z',
+             'message': {'role': 'user', 'content': 'And remember OMEGA-99'}},
+        ]
+        claude_path.write_text('\n'.join(json.dumps(r) for r in claude_records) + '\n', encoding='utf-8')
+
+        carry_out = self.root / 'carry.json'
+        res = self.run_helper(
+            '--export-antigravity', '--history-from-claude', str(claude_path),
+            '--history-source', self.CLAUDE_ID, '--out', str(carry_out),
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        stats = json.loads(res.stdout)
+        self.assertEqual(stats['messages'], 3)
+        payload = json.loads(carry_out.read_text(encoding='utf-8'))
+        self.assertEqual(payload['source'], 'claude:' + self.CLAUDE_ID)
+        steps = payload['steps']
+        self.assertGreaterEqual(len(steps), 3)
+        for step in steps:
+            msg = step['systemMessage']['systemMessage']
+            self.assertLessEqual(len(msg.encode('utf-8')), 32000)
+        combined = '\n'.join(s['systemMessage']['systemMessage'] for s in steps)
+        self.assertIn('ALPHA-11', combined)
+        self.assertIn('OMEGA-99', combined)
+        self.assertIn('[cs carried conversation part 1/', steps[0]['systemMessage']['systemMessage'])
+
+        # Round-trip back out of Antigravity into Claude.
+        agy_records = [
+            {'step_index': 0, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'status': 'DONE',
+             'content': '<USER_REQUEST>\nContinue from carried\n</USER_REQUEST>'},
+        ]
+        for idx, step in enumerate(steps, 1):
+            agy_records.append({
+                'step_index': idx, 'source': 'SYSTEM_SDK', 'type': 'SYSTEM_MESSAGE', 'status': 'DONE',
+                'content': 'The following is a <SYSTEM_MESSAGE>\n\n<SYSTEM_MESSAGE>\n'
+                           'The following system message was injected by a PreInvocation hook:\n'
+                           + step['systemMessage']['systemMessage'] + '\n</SYSTEM_MESSAGE>',
+            })
+        agy_records.append({
+            'step_index': len(steps) + 1, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE', 'status': 'DONE',
+            'content': 'Continuing with ALPHA-11 and OMEGA-99.',
+        })
+        self.write_agy_transcript(self.AGY_ID, agy_records)
+        rt_out = self.root / 'roundtrip.jsonl'
+        rt = self.run_helper(
+            '--export-claude', '--from-antigravity', self.AGY_ID,
+            '--antigravity-home', str(self.home), '--session-id', self.CLAUDE_ID,
+            '--cwd', str(self.cwd), '--out', str(rt_out),
+        )
+        self.assertEqual(rt.returncode, 0, rt.stderr)
+        rt_text = rt_out.read_text(encoding='utf-8')
+        self.assertIn('ALPHA-11', rt_text)
+        self.assertIn('OMEGA-99', rt_text)
+        self.assertIn('Continue from carried', rt_text)
+        self.assertEqual(rt_text.count('[cs carried this conversation over from '), 1)
+
+    def test_export_antigravity_from_codex_rollout(self):
+        rollout = self.codex_home / 'sessions' / f'rollout-2026-11-25-{THREAD_ID}.jsonl'
+        rollout.parent.mkdir(parents=True, exist_ok=True)
+        rollout.write_text('\n'.join(json.dumps(r) for r in [
+            {'type': 'session_meta', 'payload': {'id': THREAD_ID}},
+            {'type': 'response_item', 'payload': {'type': 'message', 'role': 'user',
+                                                  'content': [{'type': 'input_text', 'text': 'Codex prompt BETA-42'}]}},
+            {'type': 'response_item', 'payload': {'type': 'message', 'role': 'assistant',
+                                                  'content': [{'type': 'output_text', 'text': 'Codex reply GAMMA-7'}]}},
+        ]) + '\n', encoding='utf-8')
+        carry_out = self.root / 'codex-carry.json'
+        res = self.run_helper('--export-antigravity', '--thread-id', THREAD_ID, '--out', str(carry_out))
+        self.assertEqual(res.returncode, 0, res.stderr)
+        payload = json.loads(carry_out.read_text(encoding='utf-8'))
+        self.assertEqual(payload['source'], 'codex:' + THREAD_ID)
+        text = payload['steps'][0]['systemMessage']['systemMessage']
+        self.assertIn('Codex prompt BETA-42', text)
+        self.assertIn('Codex reply GAMMA-7', text)
+        self.assertIn('Codex thread ' + THREAD_ID, text)
+
+    def test_read_antigravity_refuses_symlinks_hardlinks_and_missing_history(self):
+        missing = self.run_helper('--read-antigravity', self.AGY_ID, '--antigravity-home', str(self.home))
+        self.assertEqual(missing.returncode, 1)
+        self.assertIn('Antigravity keeps no saved history for conversation ' + self.AGY_ID, missing.stderr)
+
+        outside = self.root / 'outside.jsonl'
+        outside.write_text(json.dumps({'step_index': 0, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT',
+                                       'content': '<USER_REQUEST>\nsecret\n</USER_REQUEST>'}) + '\n', encoding='utf-8')
+        transcript = self.write_agy_transcript(self.AGY_ID, [])
+        transcript.unlink()
+        transcript.symlink_to(outside)
+        linked = self.run_helper('--read-antigravity', self.AGY_ID, '--antigravity-home', str(self.home))
+        self.assertEqual(linked.returncode, 1)
+        self.assertNotIn('secret', linked.stdout + linked.stderr)
+
+        transcript.unlink()
+        os.link(outside, transcript)
+        hardlinked = self.run_helper('--read-antigravity', self.AGY_ID, '--antigravity-home', str(self.home))
+        self.assertEqual(hardlinked.returncode, 1)
+        self.assertIn('unexpected Antigravity transcript file', hardlinked.stderr)
+
+        bad_id = self.run_helper('--read-antigravity', '../etc/passwd', '--antigravity-home', str(self.home))
+        self.assertEqual(bad_id.returncode, 2)
+
+
 if __name__ == '__main__':
     unittest.main()

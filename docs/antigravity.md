@@ -244,6 +244,37 @@ records nothing.
 - Without the hook installed, a launch says so: nothing is bound, and every
   open starts a new conversation.
 
+### Carrying a conversation across engines
+
+Reopening a session under Antigravity after a run under Claude or Codex offers
+to carry the newer conversation over on an attended open (`y` carries over, `e`
+resumes an earlier Antigravity conversation when one is bound, `n` starts fresh;
+`r` and `d` join when a rotation handoff is pending). Reopening under Claude or
+Codex after an Antigravity run offers Antigravity's newer conversation in the
+same menu (a legacy `latest` binding is skipped).
+
+- **Into Antigravity (Claude / Codex → Antigravity):** `cs-codex-thread`
+  converts the source conversation into `injectSteps` (`systemMessage` chunks
+  bounded to 32,000 UTF-8 bytes each, below `agy`'s 48 KiB per-step truncation
+  measured on `agy` 1.5.17). `agy` opens fresh at an idle composer with zero
+  extra model calls; when you send your first prompt, cs's `PreInvocation` hook
+  binds the new conversation with reason `transplant` (and `carried_from`),
+  injects the carried chunks once, and removes the staged payload. Those steps
+  persist in `agy`'s trajectory across subsequent `--conversation` resumes.
+  Exiting before sending a prompt leaves the earlier Antigravity binding
+  untouched. In an encrypted session, the staged payload stays inside
+  `.cs/private/` and cs's protected run directory holds only its SHA-256 digest,
+  which the hook verifies before injecting.
+- **Out of Antigravity (Antigravity → Claude / Codex):** `cs-codex-thread`
+  reads `transcript_full.jsonl` from `agy`'s brain directory (or from the vault
+  home in an encrypted session) without following symlinks. User prompts,
+  assistant replies, tool calls (`run_command` mapped to native `Bash` /
+  `CommandExecution` rows, other tools to `mcp__antigravity__*` /
+  `McpToolCall` with server `antigravity`), clipped tool outputs, shell exit
+  codes, errors, and compaction checkpoints (`CHECKPOINT`) cross over;
+  Antigravity's thinking and internal system messages stay behind. Earlier
+  carried chunks injected by cs are preserved on round-trips.
+
 ## Launch options
 
 | cs option | `agy` flag |

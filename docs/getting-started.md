@@ -127,8 +127,11 @@ conversation, cs deletes it and the next reopen asks again; if Claude had
 already written to it, cs keeps it and prints the `claude --resume` line that
 continues it. `--resume`, a spawned open and an open without a terminal
 resume this engine's own conversation as before.
-Antigravity sessions are not offered a carry-over; an encrypted session carries
-between Claude and Codex inside its vault.
+Antigravity participates in the same carry-over menu with Claude and Codex (a
+carry into Antigravity opens at an idle prompt and injects on your first
+message; `cs <name> --resume-conversation <id>` returns to an earlier
+Antigravity conversation). An encrypted session carries between all three
+engines inside its vault.
 `ccs research-notes -conversations` shows a carry-over as `rotated
 (transplant from codex:01a1b1c4)`. Keep one interactive owner open for a
 workspace at a time.

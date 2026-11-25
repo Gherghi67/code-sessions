@@ -208,9 +208,23 @@ if [ -z "${AGY_NO_TURN:-}" ]; then
         fire Stop "$(payload "$AGY_BEFORE_RESUME" '{"executionNum": 0, "terminationReason": "NO_TOOL_CALL", "fullyIdle": true}')"
         hook_out="$AGY_HOOK_OUT"
     fi
+    if [ -n "${AGY_BEFORE_CARRY_SUBAGENT:-}" ]; then
+        hook_out="$AGY_HOOK_OUT.before-subagent"
+        fire PreInvocation "$(subpayload "$AGY_BEFORE_CARRY_SUBAGENT" '{"invocationNum": 0, "initialNumSteps": 0}')"
+        hook_out="$AGY_HOOK_OUT"
+    fi
+    if [ -n "${AGY_TAMPER_VAULT_CARRY:-}" ]; then
+        for _cf in "$CS_SESSION_META_DIR/private"/.cs-carry-*.json; do
+            [ -f "$_cf" ] || continue
+            printf '{"steps":[{"systemMessage":{"systemMessage":"TAMPERED"}}]}\n' > "$_cf"
+        done
+    fi
+    if [ -n "${AGY_CARRY_INSPECT_DIR:-}" ]; then
+        cp -a "$CS_CACHE_DIR/antigravity-runs/$CS_RUN_ID" "$AGY_CARRY_INSPECT_DIR" 2>/dev/null || true
+    fi
     # Each payload's extra JSON is built before the call: bash 3.2 misreads \"
     # inside "$(...)", and a comma there would then brace-expand.
-    extra=$(printf '{"invocationNum": 0, "initialNumSteps": %s}' "$steps")
+    extra=$(printf '{"invocationNum": 0, "initialNumSteps": %s}' "${AGY_FIRST_STEPS:-$steps}")
     fire PreInvocation "$(payload "$conversation" "$extra")"
     if [ -n "${AGY_PRIVATE_CHANGE:-}" ]; then
         unlink "$CS_SESSION_META_DIR/private" || exit 1
@@ -321,6 +335,7 @@ AGY
     unset AGY_FORKED AGY_BEFORE_RESUME AGY_WATCH_OUT AGY_CAP_NAME CS_TIOCSTI_SYSCTL CS_CODEX_PROBE_OS CS_ANTIGRAVITY_CLEAR_GRACE
     unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT AGY_DOCTOR_OUT AGY_DOCTOR_VERSION AGY_LOCK_HANDOFFS AGY_CLEARED_INVOCATION AGY_DROP_CLEARED_SEEN AGY_EARLY
     unset AGY_MAIL_SUB AGY_ARM_SUB AGY_VAULT_PLANT AGY_VAULT_LINK AGY_VAULT_LINK_TO AGY_VAULT_SEEN CS_ANTIGRAVITY_SHARED_HOME VAULT_HOME
+    unset AGY_BEFORE_CARRY_SUBAGENT AGY_TAMPER_VAULT_CARRY AGY_CARRY_INSPECT_DIR AGY_FIRST_STEPS CS_ASSUME_TTY
     _install_agy_hook
     unset CS_DEFAULT_ENGINE CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CS_LEAD_PID CLAUDE_PID
     unset CS_RUN_ENGINE CS_RUN_ID CS_SESSION_DIR CS_SESSION_NAME CS_SESSION_META_DIR
@@ -341,6 +356,7 @@ teardown() {
     unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT AGY_DOCTOR_OUT AGY_DOCTOR_VERSION AGY_LOCK_HANDOFFS AGY_CLEARED_INVOCATION AGY_DROP_CLEARED_SEEN AGY_EARLY
     unset CS_TMUX_BIN AGY_TMUX_LOG CODEX_HOME CS_CODEX_SHARED_HOME
     unset AGY_MAIL_SUB AGY_ARM_SUB AGY_VAULT_PLANT AGY_VAULT_LINK AGY_VAULT_LINK_TO AGY_VAULT_SEEN CS_ANTIGRAVITY_SHARED_HOME VAULT_HOME
+    unset AGY_BEFORE_CARRY_SUBAGENT AGY_TAMPER_VAULT_CARRY AGY_CARRY_INSPECT_DIR AGY_FIRST_STEPS CS_ASSUME_TTY
 }
 
 # cs's plugin as the installer writes it, in the test's HOME.
@@ -3566,6 +3582,207 @@ test_doctor_reports_the_antigravity_status_line() {
     assert_output_contains "$output" "or cs-statusline beside it, is not installed; run setup.sh again"
 }
 
+_agy_write_claude_source() {  # session_dir, claude_id, [projects_root]
+    local dir="$1" cid="$2" root="${3:-$CS_TRANSCRIPTS_DIR}" real key proj
+    real=$(cd -P -- "$dir" && pwd -P)
+    key=$(printf '%s' "$real" | sed 's|[^a-zA-Z0-9-]|-|g')
+    proj="$root/$key"
+    mkdir -p "$proj"
+    cat > "$proj/$cid.jsonl" <<'JSONL'
+{"type":"user","uuid":"u1","parentUuid":null,"timestamp":"2026-11-25T09:00:00Z","message":{"role":"user","content":"Remember COPPER-OWL"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","timestamp":"2026-11-25T09:00:01Z","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"Noted COPPER-OWL."}]}}
+JSONL
+    if grep -q '^claude_session_id:' "$dir/.cs/local/state" 2>/dev/null; then
+        sed "s/^claude_session_id:.*/claude_session_id: $cid/" "$dir/.cs/local/state" > "$dir/.cs/local/state.tmp"
+        mv "$dir/.cs/local/state.tmp" "$dir/.cs/local/state"
+    else
+        printf 'claude_session_id: %s\n' "$cid" >> "$dir/.cs/local/state"
+    fi
+    if grep -q '^engine:' "$dir/.cs/local/state" 2>/dev/null; then
+        sed 's/^engine:.*/engine: claude/' "$dir/.cs/local/state" > "$dir/.cs/local/state.tmp"
+        mv "$dir/.cs/local/state.tmp" "$dir/.cs/local/state"
+    else
+        printf 'engine: claude\n' >> "$dir/.cs/local/state"
+    fi
+}
+
+_agy_write_codex_source() {  # session_dir, codex_id, [codex_home]
+    local dir="$1" tid="$2" home="${3:-$TEST_TMPDIR/codex-home}" path
+    path="$home/sessions/2026/11/25/rollout-2026-11-25T09-00-00-$tid.jsonl"
+    mkdir -p "${path%/*}"
+    cat > "$path" <<JSONL
+{"type":"session_meta","payload":{"id":"$tid"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Remember JADE-WOLF"}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Noted JADE-WOLF."}]}}
+JSONL
+    printf '%s\n' "$tid" > "$dir/.cs/local/codex-thread-id"
+    if grep -q '^engine:' "$dir/.cs/local/state" 2>/dev/null; then
+        sed 's/^engine:.*/engine: codex/' "$dir/.cs/local/state" > "$dir/.cs/local/state.tmp"
+        mv "$dir/.cs/local/state.tmp" "$dir/.cs/local/state"
+    else
+        printf 'engine: codex\n' >> "$dir/.cs/local/state"
+    fi
+}
+
+test_antigravity_reopen_carries_the_newer_claude_conversation() {
+    local output dir old_id new_id claude_id first_reply second_reply cleared_reply
+    old_id=11111111-1111-4111-8111-111111111111
+    new_id=22222222-2222-4222-8222-222222222222
+    claude_id=33333333-3333-4333-8333-333333333333
+    output=$(AGY_NEW_ID="$old_id" "$CS_BIN" carry-claude --engine antigravity </dev/null 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir carry-claude)
+    _agy_write_claude_source "$dir" "$claude_id"
+    : > "$AGY_HOOK_OUT"
+
+    output=$(AGY_NEW_ID="$new_id" AGY_CLEARED=44444444-4444-4444-8444-444444444444 CS_ASSUME_TTY=1 \
+        "$CS_BIN" carry-claude --engine antigravity <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "The newest conversation here is Claude's" "offer names Claude" || return 1
+    assert_output_contains "$output" "continue the Claude conversation in Antigravity" "y describes the carry-over" || return 1
+    assert_output_contains "$output" "resume the earlier Antigravity conversation instead" "e is offered beside earlier conversation" || return 1
+    assert_output_contains "$output" "Carrying over the Claude conversation" "y confirms carry-over" || return 1
+    assert_output_contains "$output" "cs carry-claude --resume-conversation $old_id" "y names the way back to the earlier conversation" || return 1
+    assert_file_not_contains "$AGY_ARGV" "^--conversation$" "carry starts a fresh Antigravity conversation" || return 1
+    assert_file_not_contains "$AGY_ARGV" "^--prompt-interactive$" "carry opens idle composer with no kickoff prompt" || return 1
+
+    # Line 1 is SessionStart, line 2 is PreInvocation inv 0, line 3 is PreInvocation inv 1.
+    first_reply=$(sed -n '2p' "$AGY_HOOK_OUT")
+    second_reply=$(sed -n '3p' "$AGY_HOOK_OUT")
+    assert_output_contains "$first_reply" "COPPER-OWL" "first PreInvocation injects the carried Claude messages" || return 1
+    assert_output_contains "$first_reply" "Claude conversation $claude_id" "injected step carries provenance note" || return 1
+    assert_output_not_contains "$second_reply" "COPPER-OWL" "second PreInvocation does not re-inject" || return 1
+    cleared_reply=$(cat "$AGY_HOOK_OUT.cleared" 2>/dev/null || true)
+    assert_output_not_contains "$cleared_reply" "COPPER-OWL" "a later /clear does not re-inject" || return 1
+    jq -e --arg from "$old_id" --arg to "$new_id" --arg src "claude:$claude_id" \
+        'select(.event == "rotated" and .engine == "antigravity" and .from == $from and .to == $to
+                and .reason == "transplant" and .carried_from == $src)' \
+        "$dir/.cs/timeline.jsonl" >/dev/null || { echo "  FAIL: no transplant rotation recorded"; return 1; }
+    jq -e --arg id "$new_id" \
+        'select(.event == "started" and .engine == "antigravity" and .session_id == $id and .source == "transplant")' \
+        "$dir/.cs/timeline.jsonl" >/dev/null || { echo "  FAIL: no transplant start recorded"; return 1; }
+}
+
+test_antigravity_reopen_carries_the_newer_codex_conversation() {
+    local output dir new_id codex_id first_reply
+    new_id=22222222-2222-4222-8222-222222222223
+    codex_id=55555555-5555-4555-8555-555555555555
+    output=$("$CS_BIN" carry-codex --engine antigravity </dev/null 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir carry-codex)
+    rm -f "$dir/.cs/local/antigravity-conversation"
+    _agy_write_codex_source "$dir" "$codex_id" "$TEST_TMPDIR/codex-home"
+    : > "$AGY_HOOK_OUT"
+
+    output=$(CODEX_HOME="$TEST_TMPDIR/codex-home" AGY_NEW_ID="$new_id" CS_ASSUME_TTY=1 \
+        "$CS_BIN" carry-codex --engine antigravity <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "The newest conversation here is Codex's" "offer names Codex" || return 1
+    assert_output_not_contains "$output" "earlier" "no e without an earlier Antigravity conversation" || return 1
+    assert_output_not_contains "$output" "--resume-conversation" "no way back named without an earlier conversation" || return 1
+    first_reply=$(sed -n '2p' "$AGY_HOOK_OUT")
+    assert_output_contains "$first_reply" "JADE-WOLF" "first PreInvocation injects the carried Codex messages" || return 1
+    assert_eq "$new_id" "$(_binding carry-codex)" "the carried conversation is bound" || return 1
+    jq -e --arg to "$new_id" --arg src "codex:$codex_id" \
+        'select(.event == "rotated" and .engine == "antigravity" and .from == "" and .to == $to
+                and .reason == "transplant" and .carried_from == $src)' \
+        "$dir/.cs/timeline.jsonl" >/dev/null || { echo "  FAIL: first carry-over records lineage with empty from"; return 1; }
+}
+
+test_antigravity_reopen_e_n_and_esc_do_not_carry() {
+    local output dir old_id claude_id status=0
+    old_id=11111111-1111-4111-8111-111111111112
+    claude_id=33333333-3333-4333-8333-333333333334
+    output=$(AGY_NEW_ID="$old_id" "$CS_BIN" carry-keys --engine antigravity </dev/null 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir carry-keys)
+
+    # e resumes the earlier Antigravity conversation without carrying.
+    _agy_write_claude_source "$dir" "$claude_id"
+    : > "$AGY_HOOK_OUT"
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" carry-keys --engine antigravity <<< "e" 2>&1) || { echo "$output"; return 1; }
+    assert_file_contains "$AGY_ARGV" "^--conversation$" "e resumes earlier Antigravity conversation" || return 1
+    assert_file_contains "$AGY_ARGV" "$old_id" "e passes the earlier ID" || return 1
+    assert_file_not_contains "$AGY_HOOK_OUT" "COPPER-OWL" "e injects nothing" || return 1
+    assert_eq 0 "$(find "$CS_CACHE_DIR/antigravity-runs" -name '.cs-carry*' 2>/dev/null | wc -l | tr -d ' ')" "e leaves no staged carry file" || return 1
+
+    # n starts fresh without carrying.
+    _agy_write_claude_source "$dir" "$claude_id"
+    : > "$AGY_HOOK_OUT"
+    output=$(AGY_NEW_ID=22222222-2222-4222-8222-222222222224 CS_ASSUME_TTY=1 \
+        "$CS_BIN" carry-keys --engine antigravity <<< "n" 2>&1) || { echo "$output"; return 1; }
+    assert_file_not_contains "$AGY_ARGV" "^--conversation$" "n starts fresh" || return 1
+    assert_file_not_contains "$AGY_HOOK_OUT" "COPPER-OWL" "n injects nothing" || return 1
+    if grep -q '"reason":"transplant"' "$dir/.cs/timeline.jsonl"; then
+        echo "  FAIL: n recorded a transplant"; return 1
+    fi
+
+    # ESC cancels and cleans up the staged file.
+    _agy_write_claude_source "$dir" "$claude_id"
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" carry-keys --engine antigravity <<< $'\e' 2>&1) || status=$?
+    assert_eq 130 "$status" "ESC cancels with 130" || return 1
+    assert_eq 0 "$(find "$CS_CACHE_DIR/antigravity-runs" -name '.cs-carry*' 2>/dev/null | wc -l | tr -d ' ')" "ESC leaves no staged carry file" || return 1
+}
+
+test_antigravity_carry_over_guards_no_turn_missing_hook_and_subagent() {
+    local output dir old_id claude_id
+    old_id=11111111-1111-4111-8111-111111111113
+    claude_id=33333333-3333-4333-8333-333333333335
+    output=$(AGY_NEW_ID="$old_id" "$CS_BIN" carry-guard --engine antigravity </dev/null 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir carry-guard)
+
+    # Exiting before any turn warns and keeps the old binding.
+    _agy_write_claude_source "$dir" "$claude_id"
+    output=$(AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" carry-guard --engine antigravity <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "carried-over conversation was not loaded" "no-turn run warns" || return 1
+    assert_eq "$old_id" "$(_binding carry-guard)" "no-turn run keeps earlier binding" || return 1
+
+    # A subagent firing before the first typed turn cannot steal the carried steps.
+    _agy_write_claude_source "$dir" "$claude_id"
+    : > "$AGY_HOOK_OUT"
+    rm -f "$AGY_HOOK_OUT.before-subagent"
+    output=$(AGY_BEFORE_CARRY_SUBAGENT=66666666-6666-4666-8666-666666666666 \
+        AGY_NEW_ID=22222222-2222-4222-8222-222222222225 CS_ASSUME_TTY=1 \
+        "$CS_BIN" carry-guard --engine antigravity <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_file_not_contains "$AGY_HOOK_OUT.before-subagent" "COPPER-OWL" "subagent never receives carried steps" || return 1
+    assert_file_contains "$AGY_HOOK_OUT" "COPPER-OWL" "main conversation still receives carried steps" || return 1
+    assert_eq 22222222-2222-4222-8222-222222222225 "$(_binding carry-guard)" "main conversation takes the binding" || return 1
+
+    # Missing cs plugin falls back to the usual reopen prompt with one dim line.
+    rm -rf "$HOME/.gemini/config/plugins/cs"
+    _agy_write_claude_source "$dir" "$claude_id"
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" carry-guard --engine antigravity <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "the Claude conversation cannot be carried over: the cs Antigravity hook is missing or disabled" "missing hook explained" || return 1
+    assert_output_contains "$output" "Continue previous Antigravity conversation?" "usual question follows" || return 1
+}
+
+test_antigravity_encrypted_carry_stays_inside_vault_and_verifies_digest() {
+    local output dir claude_id inspect_dir new_id
+    claude_id=33333333-3333-4333-8333-333333333336
+    new_id=22222222-2222-4222-8222-222222222226
+    output=$("$CS_BIN" carry-vault --engine antigravity </dev/null 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir carry-vault)
+    _vault_session carry-vault
+    mkdir -p "$dir/.cs/claude-config/projects"
+    _agy_write_claude_source "$dir" "$claude_id" "$dir/.cs/claude-config/projects"
+
+    # Untampered vault carry: run dir holds only digest/source (no plaintext), hook delivers and deletes vault file.
+    inspect_dir="$TEST_TMPDIR/run-dir-snapshot"
+    : > "$AGY_HOOK_OUT"
+    output=$(AGY_NEW_ID="$new_id" AGY_CARRY_INSPECT_DIR="$inspect_dir" CS_ASSUME_TTY=1 \
+        "$CS_BIN" carry-vault --engine antigravity <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_file_exists "$inspect_dir/carry-digest" "run dir records SHA-256 digest" || return 1
+    assert_file_not_exists "$inspect_dir/carry.json" "run dir holds no plaintext carry file" || return 1
+    if grep -rq "COPPER-OWL" "$inspect_dir" 2>/dev/null; then
+        echo "  FAIL: encrypted carry plaintext leaked into cache run dir"; return 1
+    fi
+    assert_file_contains "$AGY_HOOK_OUT" "COPPER-OWL" "vault carry delivers cleanly" || return 1
+    assert_eq 0 "$(find "$dir/.cs/vault-mnt/private" -name '.cs-carry*' 2>/dev/null | wc -l | tr -d ' ')" "vault carry file deleted after delivery" || return 1
+
+    # Tampered vault carry file fails digest verification and delivers nothing.
+    _agy_write_claude_source "$dir" "$claude_id" "$dir/.cs/claude-config/projects"
+    : > "$AGY_HOOK_OUT"
+    output=$(AGY_NEW_ID=22222222-2222-4222-8222-222222222227 AGY_TAMPER_VAULT_CARRY=1 CS_ASSUME_TTY=1 \
+        "$CS_BIN" carry-vault --engine antigravity <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_file_not_contains "$AGY_HOOK_OUT" "TAMPERED" "tampered vault carry file is rejected" || return 1
+    assert_eq 0 "$(find "$dir/.cs/vault-mnt/private" -name '.cs-carry*' 2>/dev/null | wc -l | tr -d ' ')" "tampered vault carry file cleaned on exit" || return 1
+}
+
 run_test test_handoff_launch_binds_consumes_and_resumes_without_replay
 run_test test_cancelled_handoff_launch_does_not_replay_an_ambiguous_attempt
 run_test test_first_receipt_failure_keeps_the_main_consumer_across_subagents_and_reopens
@@ -3719,4 +3936,9 @@ run_test test_the_status_line_is_left_out_when_off_or_not_cs_to_give
 run_test test_doctor_keeps_user_settings_ahead_of_a_missing_status_line
 run_test test_doctor_warns_when_agy_is_missing_despite_an_installed_status_line
 run_test test_doctor_reports_the_antigravity_status_line
+run_test test_antigravity_reopen_carries_the_newer_claude_conversation
+run_test test_antigravity_reopen_carries_the_newer_codex_conversation
+run_test test_antigravity_reopen_e_n_and_esc_do_not_carry
+run_test test_antigravity_carry_over_guards_no_turn_missing_hook_and_subagent
+run_test test_antigravity_encrypted_carry_stays_inside_vault_and_verifies_digest
 report_results

@@ -1,7 +1,7 @@
-# ABOUTME: Carries the other engine's newer conversation into a plain reopen (Claude <-> Codex).
-# ABOUTME: Shared by both launches: what can be offered, the offer's rows, and their wording.
+# ABOUTME: Carries the other engine's newer conversation into a plain reopen (Claude <-> Codex <-> Antigravity).
+# ABOUTME: Shared by all three launches: what can be offered, the offer's rows, and their wording.
 
-# Reopening a session under the other engine used to resume that engine's own
+# Reopening a session under another engine used to resume that engine's own
 # conversation, the one from before the switch, so the work done since stayed
 # behind. An attended open now offers the newer conversation instead: y carries
 # it over, converted by cs-codex-thread, as a new conversation that takes the
@@ -15,6 +15,7 @@ _transplant_label() {  # engine
     case "$1" in
         claude) printf 'Claude\n' ;;
         codex) printf 'Codex\n' ;;
+        antigravity) printf 'Antigravity\n' ;;
         *) printf '%s\n' "$1" ;;
     esac
 }
@@ -23,21 +24,32 @@ _transplant_label() {  # engine
 # last run was under that engine. cs_launch_session records a run's engine as
 # the run ends, so during a launch the state still names the previous run's.
 # Prints "<engine> <native id>". Nothing is offered on a same-engine open, or
-# from or to Antigravity (its format is not probed yet). An encrypted session
-# keeps both engines' conversations in its vault (.cs/claude-config and
-# .cs/private/codex-home), and a carry reads one and writes the other there.
+# for Antigravity's legacy "latest" binding. An encrypted session keeps each
+# engine's conversations in its vault (.cs/claude-config, .cs/private/codex-home,
+# and .cs/private/antigravity-home), and a carry reads one and writes the other.
 _transplant_source() {  # session_dir, target engine
     local session_dir="$1" target="$2" last id
-    case "$target" in claude|codex) ;; *) return 1 ;; esac
+    case "$target" in claude|codex|antigravity) ;; *) return 1 ;; esac
     last=$(_read_local_state "$session_dir/.cs/local/state" engine)
-    case "$last" in claude|codex) ;; *) return 1 ;; esac
+    case "$last" in claude|codex|antigravity) ;; *) return 1 ;; esac
     [ "$last" != "$target" ] || return 1
     id=$(cs_binding_read "$session_dir" "$last" 2>/dev/null) || return 1
     case "$last" in
         claude) _is_uuid "$id" || return 1 ;;
         codex) _codex_thread_id_valid "$id" || return 1 ;;
+        antigravity) _is_uuid "$id" || return 1 ;;
     esac
     printf '%s %s\n' "$last" "$id"
+}
+
+# Where an Antigravity source conversation's home sits: in the vault for an
+# encrypted session (fails while unmounted), else the user's own home.
+_transplant_antigravity_home() {  # session_dir
+    if _switch_session_encrypted "$1"; then
+        _antigravity_vault_home_path "$1"
+    else
+        _antigravity_shared_home
+    fi
 }
 
 # How many messages the helper's count names: a plain number, else 0.
