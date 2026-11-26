@@ -927,6 +927,23 @@ test_worktree_create_carries_the_ignored_files_worktreeinclude_names() {
     assert_output_contains "$output" "Copied 2 ignored files that .worktreeinclude names" "the launch says what it copied" || return 1
 }
 
+test_worktree_create_copies_only_the_user_authored_antigravity_rule() {
+    _included_base "incagy" ".agents/" ".env"
+    local base_dir="$CS_SESSIONS_ROOT/incagy" rule=".agents/rules/cs-session.md" output
+    printf '.agents/\n' >> "$base_dir/.gitignore"
+    (cd "$base_dir" && git add .gitignore && git commit -q -m "ignore local rules") || return 1
+    mkdir -p "$base_dir/.agents/rules"
+    printf 'User-authored project rule\n' > "$base_dir/$rule"
+    output=$("$CS_BIN" "incagy@user-rule" < /dev/null 2>&1) || { echo "$output"; return 1; }
+    assert_eq "User-authored project rule" "$(cat "$CS_SESSIONS_ROOT/incagy@user-rule/$rule" 2>/dev/null)" \
+        "an unmarked rule is copied intact" || return 1
+
+    printf -- '---\ntrigger: always_on\n---\n<!-- cs:antigravity-session-context -->\nBase session context.\n' > "$base_dir/$rule"
+    output=$("$CS_BIN" "incagy@managed-rule" < /dev/null 2>&1) || { echo "$output"; return 1; }
+    assert_file_exists "$CS_SESSIONS_ROOT/incagy@managed-rule/.env" "other ignored files are copied" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/incagy@managed-rule/$rule" "the feature never inherits the base session's generated rule"
+}
+
 test_worktree_create_without_worktreeinclude_copies_nothing() {
     _included_base "noinc" ".env"
     local base_dir="$CS_SESSIONS_ROOT/noinc" wt="$CS_SESSIONS_ROOT/noinc@task1"
@@ -3224,6 +3241,7 @@ run_test test_worktree_of_worktree_refused
 run_test test_worktree_create_succeeds_with_untracked_base
 run_test test_worktree_create_goes_ahead_over_uncommitted_base_session_records
 run_test test_worktree_create_carries_the_ignored_files_worktreeinclude_names
+run_test test_worktree_create_copies_only_the_user_authored_antigravity_rule
 run_test test_worktree_create_without_worktreeinclude_copies_nothing
 run_test test_worktree_create_copies_nothing_through_a_link_in_the_feature
 run_test test_worktree_create_copies_no_link

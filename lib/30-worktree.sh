@@ -1015,7 +1015,8 @@ _worktree_included_list() {  # base_dir out
 # names and git ignores (an env file, a local config), which a checkout never
 # carries, from the list _worktree_included_list wrote. The file reads as a
 # .gitignore does, as Claude Code reads it for the worktrees it makes itself.
-# Left where they are: a file the feature already has, cs's own records,
+# Left where they are: a file the feature already has, cs's own records
+# and its generated Antigravity session rule,
 # .claude/settings.local.json (cs writes the feature's, and the retire adds
 # every permission rule it holds to the base's, so a copy would hand the base
 # back a rule it dropped meanwhile), a link (cs writes some of these files
@@ -1026,7 +1027,12 @@ _worktree_included_list() {  # base_dir out
 _worktree_carry_included() {  # base_dir wt_dir list
     local base="$1" wt="$2" f dest copied=0
     while IFS= read -r -d '' f; do
-        case "$f" in */|.cs/*|CLAUDE.local.md) continue ;; esac
+        case "$f" in
+            */|.cs/*|CLAUDE.local.md) continue ;;
+            .agents/rules/cs-session.md)
+                if _antigravity_rule_is_cs "$base"; then continue; fi
+                ;;
+        esac
         if [ "$f" = .claude/settings.local.json ]; then
             warn "Not copied: $f (cs manages it)" >&2
             continue
