@@ -2774,6 +2774,49 @@ test_doctor_names_the_vault_home_as_a_plain_name() {
 }
 run_test test_doctor_names_the_vault_home_as_a_plain_name
 
+# A conversion can stop while copying transcripts, before it records the
+# vault in .cs/local. Only inspect staging directories on the mounted volume.
+test_doctor_reports_interrupted_vault_transcript_staging() {
+    local mnt="$CLAUDE_SESSION_META_DIR/vault-mnt" tools="$TEST_TMPDIR/mount-bin"
+    local dead regular linked staging config mounted output
+    sh -c 'exit 0' & dead=$!
+    wait "$dead"
+    sh -c 'exit 0' & regular=$!
+    wait "$regular"
+    sh -c 'exit 0' & linked=$!
+    wait "$linked"
+    config="$mnt/claude-config"
+    staging="$config/projects.cs-moving.$dead"
+    mkdir -p "$staging" "$config/projects.cs-moving.$$" "$tools"
+    printf 'partial transcript\n' > "$staging/partial.jsonl"
+    touch "$config/projects.cs-moving.$regular"
+    ln -s "$staging" "$config/projects.cs-moving.$linked"
+    cat > "$tools/mount" <<'EOF'
+#!/bin/sh
+if [ -n "${CS_TEST_DOCTOR_MOUNT:-}" ]; then
+    printf '/dev/cs-test on %s (apfs, local)\n' "$CS_TEST_DOCTOR_MOUNT"
+fi
+EOF
+    chmod +x "$tools/mount"
+    output=$(cd "$CLAUDE_SESSION_DIR" && PATH="$tools:$PATH" CS_TEST_DOCTOR_MOUNT= "$CS_BIN" -doctor 2>&1) || true
+    assert_output_not_contains "$output" "Vault transcript staging:" "an unmounted vault is not inspected" || return 1
+
+    mounted=$(cd "$mnt" && pwd -P) || return 1
+    output=$(cd "$CLAUDE_SESSION_DIR" && PATH="$tools:$PATH" CS_TEST_DOCTOR_MOUNT="$mounted" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Vault transcript staging: $mounted/claude-config/projects.cs-moving.$dead" \
+        "doctor names the interrupted transcript copy" || return 1
+    assert_output_not_contains "$output" "projects.cs-moving.$$ remains" "a live copy stays in progress" || return 1
+    assert_output_not_contains "$output" "projects.cs-moving.$regular remains" "a regular file is not staging" || return 1
+    assert_output_not_contains "$output" "projects.cs-moving.$linked remains" "a symbolic link is not staging" || return 1
+    assert_eq "partial transcript" "$(cat "$staging/partial.jsonl")" "doctor leaves the transcript untouched" || return 1
+
+    mv "$config" "$mnt/vault-config"
+    ln -s vault-config "$config"
+    output=$(cd "$CLAUDE_SESSION_DIR" && PATH="$tools:$PATH" CS_TEST_DOCTOR_MOUNT="$mounted" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_not_contains "$output" "Vault transcript staging:" "doctor does not follow a linked config directory"
+}
+run_test test_doctor_reports_interrupted_vault_transcript_staging
+
 
 # Stamp the setup session the way a clean open would for alice: the merge
 # driver set, the probe files it has (CLAUDE.md, .cs/README.md) at a fixed old
