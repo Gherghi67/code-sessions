@@ -3611,11 +3611,12 @@ class AntigravityCarryTests(unittest.TestCase):
                  {'name': 'run_command', 'args': {'CommandLine': 'echo ok'}},
                  {'name': 'read_file', 'args': {'Path': '/repo/a.txt'}},
              ]},
-            {'step_index': 2, 'source': 'MODEL', 'type': 'GENERIC', 'status': 'DONE',
+            {'step_index': 2, 'source': 'SYSTEM', 'type': 'CHECKPOINT', 'status': 'DONE', 'content': ''},
+            {'step_index': 3, 'source': 'MODEL', 'type': 'GENERIC', 'status': 'DONE',
              'content': 'Command exited with code 0.\n\nCommand output:\nok\n'},
-            {'step_index': 3, 'source': 'MODEL', 'type': 'GENERIC', 'status': 'ERROR',
+            {'step_index': 4, 'source': 'MODEL', 'type': 'GENERIC', 'status': 'ERROR',
              'error': 'file does not exist', 'content': ''},
-            {'step_index': 4, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE', 'status': 'DONE',
+            {'step_index': 5, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE', 'status': 'DONE',
              'content': 'Done.'},
         ]
         self.write_agy_transcript(self.AGY_ID, records)
@@ -3749,6 +3750,7 @@ class AntigravityCarryTests(unittest.TestCase):
                                        '<SYSTEM_MESSAGE>\n'
                                        'The following system message was injected by a PreInvocation hook:\n'
                                        + chunk + '\n</SYSTEM_MESSAGE>'})
+        records.insert(2, {'type': 'CHECKPOINT', 'source': 'SYSTEM', 'content': '\n  '})
         self.write_agy_transcript(self.AGY_ID, records)
         out = self.root / 'legacy.jsonl'
         result = self.run_helper('--export-claude', '--from-antigravity', self.AGY_ID,

@@ -1586,9 +1586,9 @@ def read_antigravity(home, conversation_id, limit):
                     text = (text + "\n" if text else "") + "\n".join(["[image]"] * images)
                 pending_user = (text, stamp)
             elif kind == "CHECKPOINT":
-                finish_input()
-                pending_calls = []
                 if isinstance(content, str) and content.strip():
+                    finish_input()
+                    pending_calls = []
                     history.reset()
                     summary = REMINDER_TAG.sub("&lt;", content.strip())
                     history.add("user", "[Summary of the earlier conversation]\n" + summary, stamp)
