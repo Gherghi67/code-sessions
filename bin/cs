@@ -25445,7 +25445,8 @@ _antigravity_statusline_settings() {
 }
 
 _antigravity_carry_sha256() {  # file
-    python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1" 2>/dev/null
+    # The launcher runs this from the workspace. Isolate Python's import path.
+    python3 -I -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1" 2>/dev/null
 }
 
 # Offered when the session's newer conversation is Claude's or Codex's

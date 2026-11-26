@@ -3751,6 +3751,22 @@ test_antigravity_carry_over_guards_no_turn_missing_hook_and_subagent() {
     assert_output_contains "$output" "Continue previous Antigravity conversation?" "usual question follows" || return 1
 }
 
+test_antigravity_carry_digest_does_not_depend_on_workspace_imports() {
+    require_tool python3 || return $?
+    local file="$TEST_TMPDIR/carry-digest-input" digest
+    printf 'abc' > "$file"
+    digest=$(
+        source "$SCRIPT_DIR/../lib/79-antigravity.sh"
+        python3() {
+            [ "${1:-}" = -I ] || return 64
+            command python3 "$@"
+        }
+        _antigravity_carry_sha256 "$file"
+    )
+    assert_eq ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad "$digest" \
+        "carry hashes the input with workspace imports disabled"
+}
+
 test_antigravity_encrypted_carry_stays_inside_vault_and_verifies_digest() {
     local output dir claude_id inspect_dir new_id
     claude_id=33333333-3333-4333-8333-333333333336
@@ -3940,5 +3956,6 @@ run_test test_antigravity_reopen_carries_the_newer_claude_conversation
 run_test test_antigravity_reopen_carries_the_newer_codex_conversation
 run_test test_antigravity_reopen_e_n_and_esc_do_not_carry
 run_test test_antigravity_carry_over_guards_no_turn_missing_hook_and_subagent
+run_test test_antigravity_carry_digest_does_not_depend_on_workspace_imports
 run_test test_antigravity_encrypted_carry_stays_inside_vault_and_verifies_digest
 report_results
