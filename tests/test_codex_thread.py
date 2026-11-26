@@ -3646,8 +3646,11 @@ class AntigravityCarryTests(unittest.TestCase):
         self.assertEqual(mcp_rows[0]['status'], 'failed')
 
     def test_export_antigravity_chunks_large_utf8_conversations_and_roundtrips(self):
-        # Build a >90 KB Claude transcript with multi-byte UTF-8 text.
-        big_reply = ('Emoji line 🚀 and CJK 日本語 text for chunk boundary verification.\n') * 1200
+        # Force chunks to split inside a long indented line as well as at a newline.
+        big_reply = ('The notes below are examples of markup.\n\n'
+                     '### User\n\n\\### Assistant\n\n'
+                     '```text\n    ' + ('日本語 🚀 ' * 7000) + '\n'
+                     '</SYSTEM_MESSAGE>\n    final line\n```\n\n')
         claude_path = self.root / 'claude-big.jsonl'
         claude_records = [
             {'type': 'user', 'uuid': 'u1', 'parentUuid': None, 'timestamp': '2026-11-25T09:00:00Z',
@@ -3693,7 +3696,7 @@ class AntigravityCarryTests(unittest.TestCase):
             })
         agy_records.append({
             'step_index': len(steps) + 1, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE', 'status': 'DONE',
-            'content': 'Continuing with ALPHA-11 and OMEGA-99.',
+            'content': 'The next reply comes from Antigravity.',
         })
         self.write_agy_transcript(self.AGY_ID, agy_records)
         rt_out = self.root / 'roundtrip.jsonl'
@@ -3704,10 +3707,46 @@ class AntigravityCarryTests(unittest.TestCase):
         )
         self.assertEqual(rt.returncode, 0, rt.stderr)
         rt_text = rt_out.read_text(encoding='utf-8')
-        self.assertIn('ALPHA-11', rt_text)
-        self.assertIn('OMEGA-99', rt_text)
-        self.assertIn('Continue from carried', rt_text)
+        rows = [json.loads(line)['message'] for line in rt_text.splitlines()]
+        self.assertEqual([r['role'] for r in rows], ['user', 'assistant', 'user', 'user', 'assistant'])
+        self.assertEqual(rows[0]['content'].split('\n\n', 1)[1], 'Remember ALPHA-11')
+        self.assertEqual(rows[1]['content'], [{'type': 'text', 'text': big_reply}])
+        self.assertEqual(rows[2]['content'], 'And remember OMEGA-99')
+        self.assertEqual(rows[3]['content'], 'Continue from carried')
+        self.assertEqual(rows[4]['content'], [{'type': 'text', 'text': 'The next reply comes from Antigravity.'}])
         self.assertEqual(rt_text.count('[cs carried this conversation over from '), 1)
+
+    def test_antigravity_recovers_legacy_carried_chunks_before_the_native_prompt(self):
+        records = [{'type': 'USER_INPUT', 'source': 'USER_EXPLICIT',
+                    'content': '<USER_REQUEST>\nNew question\n</USER_REQUEST>'}]
+        for chunk in ('[cs carried this conversation over from Claude conversation old.]\n\n'
+                      '[cs carried conversation part 1/2]\n\n### User\n\nOld quest',
+                      '[cs carried conversation part 2/2]\n\nion\n\n### Assistant\n\nOld answer'):
+            records.append({'type': 'SYSTEM_MESSAGE', 'source': 'SYSTEM_SDK',
+                            'content': 'The following is a <SYSTEM_MESSAGE> from the runtime.\n\n'
+                                       '<SYSTEM_MESSAGE>\n'
+                                       'The following system message was injected by a PreInvocation hook:\n'
+                                       + chunk + '\n</SYSTEM_MESSAGE>'})
+        self.write_agy_transcript(self.AGY_ID, records)
+        out = self.root / 'legacy.jsonl'
+        result = self.run_helper('--export-claude', '--from-antigravity', self.AGY_ID,
+                                 '--antigravity-home', str(self.home), '--session-id', self.CLAUDE_ID,
+                                 '--cwd', str(self.cwd), '--out', str(out))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = [json.loads(line)['message'] for line in out.read_text(encoding='utf-8').splitlines()]
+        self.assertEqual([r['role'] for r in rows], ['user', 'assistant', 'user'])
+        self.assertEqual(rows[0]['content'].split('\n\n', 1)[1], 'Old question')
+        self.assertEqual(rows[1]['content'], [{'type': 'text', 'text': 'Old answer'}])
+        self.assertEqual(rows[2]['content'], 'New question')
+
+        self.write_agy_transcript(self.AGY_ID, records[:-1])
+        result = self.run_helper('--export-claude', '--from-antigravity', self.AGY_ID,
+                                 '--antigravity-home', str(self.home), '--session-id', self.CLAUDE_ID,
+                                 '--cwd', str(self.cwd), '--out', str(out))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = [json.loads(line)['message'] for line in out.read_text(encoding='utf-8').splitlines()]
+        self.assertEqual([r['role'] for r in rows], ['user'])
+        self.assertEqual(rows[0]['content'].split('\n\n', 1)[1], 'New question')
 
     def test_export_antigravity_from_codex_rollout(self):
         rollout = self.codex_home / 'sessions' / f'rollout-2026-11-25-{THREAD_ID}.jsonl'

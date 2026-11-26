@@ -292,9 +292,12 @@ AGY_METADATA_TAG = re.compile(
     r"<(?:ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)>.*?</(?:ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)>\s*", re.S)
 AGY_STEP_TIMESTAMPS = re.compile(r"\A(?:(?:Created|Completed) At: [^\r\n]*\r?\n)+")
 AGY_SHELL_EXIT = re.compile(r"^Command exited with code (-?\d+)\.$", re.M)
-AGY_SYSTEM_WRAPPER = re.compile(r"<SYSTEM_MESSAGE>\r?\n?(.*?)\r?\n?</SYSTEM_MESSAGE>", re.S)
-AGY_HOOK_INJECTED_PREFIX = "The following system message was injected by a PreInvocation hook:\n"
-AGY_CARRIED_PART = re.compile(r"\A\s*\[cs carried conversation part \d+/\d+\]\s*")
+AGY_SYSTEM_WRAPPER = re.compile(r"(?:\A|\n)<SYSTEM_MESSAGE>(\r?\n)(.*)\1</SYSTEM_MESSAGE>\s*\Z", re.S)
+AGY_HOOK_INJECTED_PREFIX = re.compile(r"\AThe following system message was injected by a PreInvocation hook:\r?\n")
+AGY_CARRIED_PART = re.compile(r"\A\[cs carried conversation part ([1-9][0-9]{0,8})/([1-9][0-9]{0,8})\]\r?\n\r?\n")
+AGY_CARRIED_FORMAT = "[cs carried conversation format 1]\n\n"
+AGY_CARRIED_ROLE = re.compile(r"(?:\A|\n\n)### (User|Assistant)\n\n")
+AGY_CARRIED_LITERAL_HEADING = re.compile(r"^(\\*)### (?:User|Assistant)(?=\r?$)", re.M)
 
 
 def open_block(text, closer=None):
@@ -331,14 +334,14 @@ class History:
         # outputs whose calls came before it.
         self.calls = {}
 
-    def add(self, role, text, timestamp=None, closed=False, tool=None):
+    def add(self, role, text, timestamp=None, closed=False, tool=None, *, new_message=False):
         # A closed part is cs's own markdown, every block in it closed. A
         # message is one markdown document, so a block the text before it
         # left open is closed first, or the two would pair up.
         if not isinstance(text, str) or not text.strip():
             return
         last = self.messages[-1] if self.messages else None
-        if last is None or last["role"] != role:
+        if new_message or last is None or last["role"] != role:
             last = {"role": role, "parts": [], "timestamp": timestamp, "closed": 0}
             self.messages.append(last)
         if tool is not None:
@@ -1498,22 +1501,64 @@ def antigravity_user_text(content):
     return REMINDER_TAG.sub("&lt;", CARRIED_NOTE.sub("", text))
 
 
-def antigravity_carried_system_text(content):
-    """Extract earlier carried conversation text injected by cs into an Antigravity run."""
+def antigravity_carried_system_part(content):
+    """Extract a carry part from the hook's system step, preserving its body."""
     match = AGY_SYSTEM_WRAPPER.search(content)
-    body = match.group(1) if match else content
-    if body.startswith(AGY_HOOK_INJECTED_PREFIX):
-        body = body[len(AGY_HOOK_INJECTED_PREFIX):]
-    if not (CARRIED_NOTE.match(body) or AGY_CARRIED_PART.match(body)):
-        return ""
-    body = CARRIED_NOTE.sub("", body)
-    body = AGY_CARRIED_PART.sub("", body)
-    return REMINDER_TAG.sub("&lt;", body.strip())
+    body = AGY_HOOK_INJECTED_PREFIX.sub("", match[2] if match else content)
+    note = CARRIED_NOTE.match(body)
+    if note:
+        body = body[note.end():]
+    part = AGY_CARRIED_PART.match(body)
+    if part:
+        return int(part[1]), int(part[2]), body[part.end():]
+    if note:
+        return 1, 1, body
+    return None
+
+
+def antigravity_carried_messages(parts):
+    if not parts or any((index, total) != (expected, len(parts))
+                        for expected, (index, total, _) in enumerate(parts, 1)):
+        return
+    bodies = [body for _, _, body in parts]
+    exact = bodies[0].startswith(AGY_CARRIED_FORMAT)
+    if exact:
+        body = "".join(bodies)[len(AGY_CARRIED_FORMAT):]
+    else:
+        # Older exports grouped parts of individual messages. Reinsert a
+        # separator before a heading at the start of a new part. Whitespace
+        # already changed by the old exporter cannot be reconstructed.
+        body = bodies[0] + "".join(("\n\n" if AGY_CARRIED_ROLE.match(part) else "") + part
+                                  for part in bodies[1:])
+    fields = AGY_CARRIED_ROLE.split(REMINDER_TAG.sub("&lt;", body))
+    if fields[0]:
+        yield "user", fields[0]
+    for role, message in zip(fields[1::2], fields[2::2]):
+        if exact:
+            message = AGY_CARRIED_LITERAL_HEADING.sub(lambda m: m[0][1:] if m[1] else m[0], message)
+        yield role.lower(), message
 
 
 def read_antigravity(home, conversation_id, limit):
     history = History()
     pending_calls = []
+    pending_user = None
+    carry_parts = []
+    carry_stamp = None
+
+    def finish_input():
+        # The hook's system steps follow USER_INPUT in the native transcript,
+        # but the carried conversation happened before that user message.
+        nonlocal pending_user
+        carried = False
+        for role, message in antigravity_carried_messages(carry_parts):
+            history.add(role, message, carry_stamp, new_message=True)
+            carried = True
+        carry_parts.clear()
+        if pending_user is not None:
+            history.add("user", *pending_user, new_message=carried)
+            pending_user = None
+
     with open_antigravity_transcript(home, conversation_id) as handle:
         for line in handle:
             try:
@@ -1528,23 +1573,29 @@ def read_antigravity(home, conversation_id, limit):
             stamp = stamp if isinstance(stamp, str) else None
             content = record.get("content")
             if kind == "USER_INPUT" and source == "USER_EXPLICIT":
+                if pending_user is not None:
+                    finish_input()
                 pending_calls = []
                 text = antigravity_user_text(content) if isinstance(content, str) else ""
                 images = len(record["media"]) if isinstance(record.get("media"), list) else 0
                 if images:
                     text = (text + "\n" if text else "") + "\n".join(["[image]"] * images)
-                history.add("user", text, stamp)
+                pending_user = (text, stamp)
             elif kind == "CHECKPOINT":
+                finish_input()
                 pending_calls = []
                 if isinstance(content, str) and content.strip():
                     history.reset()
                     summary = REMINDER_TAG.sub("&lt;", content.strip())
                     history.add("user", "[Summary of the earlier conversation]\n" + summary, stamp)
             elif kind == "SYSTEM_MESSAGE" and source in ("SYSTEM_SDK", "SYSTEM") and isinstance(content, str):
-                carried = antigravity_carried_system_text(content)
-                if carried:
-                    history.add("user", carried, stamp)
+                part = antigravity_carried_system_part(content)
+                if part is not None:
+                    if not carry_parts:
+                        carry_stamp = stamp
+                    carry_parts.append(part)
             elif kind == "PLANNER_RESPONSE" and source == "MODEL":
+                finish_input()
                 pending_calls = []
                 if isinstance(content, str) and content.strip():
                     history.add("assistant", content, stamp)
@@ -1570,6 +1621,7 @@ def read_antigravity(home, conversation_id, limit):
                             "input": args if isinstance(args, dict) else None,
                             "namespace": "antigravity", "cwd": None})
             elif kind == "GENERIC" and source == "MODEL":
+                finish_input()
                 call_id, _ = pending_calls.pop(0) if pending_calls else (None, None)
                 raw_content = content if isinstance(content, str) else ""
                 cleaned = AGY_STEP_TIMESTAMPS.sub("", raw_content)
@@ -1586,6 +1638,7 @@ def read_antigravity(home, conversation_id, limit):
                 output = text[:limit] + cut_note(text, limit) + "\n[image]" * images
                 history.add("assistant", tool_result(text, images, limit, failed), stamp, closed=True, tool={
                     "result": call_id, "output": output, "failed": failed, "exit_code": exit_code})
+    finish_input()
     return history.export()
 
 
@@ -1626,28 +1679,15 @@ def antigravity_carry_chunks(messages, note, chunk_bytes=AGY_STEP_CHUNK_BYTES):
     blocks = []
     for message in messages:
         heading = "### User" if message["role"] == "user" else "### Assistant"
-        blocks.append(heading + "\n\n" + message["text"])
+        body = AGY_CARRIED_LITERAL_HEADING.sub(lambda m: "\\" + m[0], message["text"])
+        blocks.append(heading + "\n\n" + body)
     # Reserve headroom for the note and part marker on chunk 1 and part marker on later chunks.
     marker_reserve = len(note.encode("utf-8")) + 64
     body_limit = max(1024, chunk_bytes - marker_reserve)
-    pieces = []
-    for block_text in blocks:
-        pieces.extend(split_utf8_text(block_text, body_limit))
-    grouped, current, current_bytes = [], [], 0
-    for piece in pieces:
-        sep = 2 if current else 0
-        piece_bytes = len(piece.encode("utf-8"))
-        if current and current_bytes + sep + piece_bytes > body_limit:
-            grouped.append("\n\n".join(current))
-            current, current_bytes = [piece], piece_bytes
-        else:
-            current.append(piece)
-            current_bytes += sep + piece_bytes
-    if current:
-        grouped.append("\n\n".join(current))
-    total = len(grouped)
+    parts = split_utf8_text(AGY_CARRIED_FORMAT + "\n\n".join(blocks), body_limit)
+    total = len(parts)
     steps = []
-    for index, body in enumerate(grouped, 1):
+    for index, body in enumerate(parts, 1):
         if index == 1:
             part = "[cs carried conversation part 1/{}]\n\n".format(total) if total > 1 else ""
             text = note + "\n\n" + part + body
