@@ -247,7 +247,7 @@ records nothing.
 ### Carrying a conversation across engines
 
 Reopening a session under Antigravity after a run under Claude or Codex offers
-to carry the newer conversation over on an attended open (`y` carries over, `e`
+to carry the newer conversation over on an attended plain open (`y` carries over, `e`
 resumes an earlier Antigravity conversation when one is bound, `n` starts fresh;
 `r` and `d` join when a rotation handoff is pending). Reopening under Claude or
 Codex after an Antigravity run offers Antigravity's newer conversation in the
@@ -257,14 +257,17 @@ same menu (a legacy `latest` binding is skipped).
   converts the source conversation into `injectSteps` (`systemMessage` chunks
   bounded to 32,000 UTF-8 bytes each, below `agy`'s 48 KiB per-step truncation
   measured on `agy` 1.5.17). `agy` opens fresh at an idle composer with zero
-  extra model calls; when you send your first prompt, cs's `PreInvocation` hook
+  extra model calls. When you send your first prompt in the new conversation,
+  cs's `SessionStart` hook identifies it and `PreInvocation`
   binds the new conversation with reason `transplant` (and `carried_from`),
   injects the carried chunks once, and removes the staged payload. Those steps
   persist in `agy`'s trajectory across subsequent `--conversation` resumes.
-  Exiting before sending a prompt leaves the earlier Antigravity binding
-  untouched. In an encrypted session, the staged payload stays inside
-  `.cs/private/` and cs's protected run directory holds only its SHA-256 digest,
-  which the hook verifies before injecting.
+  Exiting before sending a prompt preserves the source engine and earlier
+  Antigravity binding. Sending your first prompt in a conversation opened with
+  `/resume` cancels the carry for that launch. A direct `-finish` open gives
+  its kickoff priority and skips the carry offer. In an encrypted session, the
+  staged payload stays inside `.cs/private/`. cs keeps its SHA-256 digest in
+  the protected run directory and verifies the digest before injecting.
 - **Out of Antigravity (Antigravity → Claude / Codex):** `cs-codex-thread`
   reads `transcript_full.jsonl` from `agy`'s brain directory (or from the vault
   home in an encrypted session) without following symlinks. User prompts,

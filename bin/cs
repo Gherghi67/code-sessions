@@ -25480,7 +25480,8 @@ _antigravity_transplant_prepare() {  # session_dir
     from=${source%% *}
     src_id=${source#* }
     helper=$(_codex_thread_helper 2>/dev/null) && [ -x "$helper" ] || return 0
-    if ! _antigravity_rotation_hook_ready; then
+    if ! _antigravity_rotation_hook_ready SessionStart session-start "$CS_BIN" \
+        || ! _antigravity_rotation_hook_ready PreInvocation pre-invocation "$CS_BIN"; then
         _transplant_unreadable "$from" "the cs Antigravity hook is missing or disabled"
         return 0
     fi
@@ -25657,7 +25658,8 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
         auto)
             # Nobody sits at the spawn's own window to answer: its open
             # continues the conversation, as Enter would, with the kickoff.
-            if cs_interactive && ! _spawn_seed_is_owned "$session_name"; then
+            # An explicit -finish has its own kickoff instead of an idle carry.
+            if [ -z "$merge_feature" ] && cs_interactive && ! _spawn_seed_is_owned "$session_name"; then
                 _antigravity_transplant_prepare "$session_dir"
             fi
             if { [ -n "$recorded" ] || [ -n "$pending_handoff" ] || [ -n "$transplant_from" ]; } && cs_interactive \
@@ -26244,17 +26246,22 @@ _antigravity_hook_typed() {
 
 # SessionStart fires once for each conversation agy starts: the run's first
 # when the launch opened none, one /clear or /new started, and a subagent's;
-# never for one opened with --conversation or /resume. Once the run has bound
-# its conversation, a typed one is marked new in the run's directory, for
-# PreInvocation to move the session to it (_antigravity_hook_bind). The mark
-# is all this does: it never binds, and always answers {}.
+# never for one opened with --conversation or /resume. Record which new
+# conversation can receive carry before the run binds. Once bound, a typed
+# new conversation may take the session through /clear. SessionStart only
+# records these marks and leaves the binding to PreInvocation.
 _antigravity_hook_session_start() {  # payload
     local run_dir
     _antigravity_payload_read "$1" || return 0
     _antigravity_hook_typed || return 0
     run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || return 0
+    if [ ! -e "$run_dir/bound" ] && [ ! -L "$run_dir/bound" ]; then
+        if _antigravity_carry_pending "$run_dir" && cs_run_lease_owned "$CS_SESSION_DIR/.cs"; then
+            ( umask 077; set -C; printf '%s\n' "$AGY_HOOK_ID" > "$run_dir/carry-conversation" ) 2>/dev/null || true
+        fi
+        return 0
+    fi
     [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ] || return 0
-    [ -e "$run_dir/bound" ] || [ -L "$run_dir/bound" ] || return 0
     cs_run_lease_owned "$CS_SESSION_DIR/.cs" || return 0
     _antigravity_run_mark "$run_dir/new-$AGY_HOOK_ID"
 }
@@ -26375,7 +26382,7 @@ _antigravity_carry_discard() {  # run_dir
 # binds only a session that has no conversation yet (or the legacy word).
 _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
     local session_dir="$1" id="$2" run_dir="$3" previous opened="" source=startup reason=fresh log_dir handoff="" receipt_dir carried_from=""
-    local carry_payload=""
+    local carry_payload="" carry_skipped=""
     if [ -n "$run_dir" ]; then
         if _antigravity_explicit_resume_pending "$run_dir"; then
             local expected
@@ -26393,8 +26400,17 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
             return 0
         fi
         if _antigravity_carry_pending "$run_dir"; then
-            [ "$AGY_HOOK_INVOCATION" = 0 ] && _antigravity_hook_typed \
-                && { [ -z "$AGY_HOOK_STEPS" ] || [ "$AGY_HOOK_STEPS" -le 1 ]; } || return 0
+            [ "$AGY_HOOK_INVOCATION" = 0 ] && _antigravity_hook_typed || return 0
+            # A resumed conversation fires no SessionStart. The first typed
+            # turn decides the carry, even when other hooks inserted steps.
+            local carry_conversation=""
+            if [ -f "$run_dir/carry-conversation" ] && [ ! -L "$run_dir/carry-conversation" ]; then
+                IFS= read -r carry_conversation < "$run_dir/carry-conversation" || carry_conversation=""
+            fi
+            if [ "$id" != "$carry_conversation" ]; then
+                _antigravity_carry_discard "$run_dir" || return 1
+                carry_skipped=1
+            fi
         fi
         IFS= read -r opened < "$run_dir/opened" 2>/dev/null || opened=""
     fi
@@ -26426,7 +26442,7 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
         if [ "$previous" != "$id" ]; then
             cs_binding_write "$session_dir" antigravity "$id" || return 1
         fi
-        if [ "$previous" != "$id" ] || [ -n "$carry_payload" ]; then
+        if [ "$previous" != "$id" ] || [ -n "$carry_payload$carry_skipped" ]; then
             _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine antigravity || return 1
         fi
     fi

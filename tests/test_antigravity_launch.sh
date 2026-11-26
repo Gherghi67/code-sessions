@@ -116,6 +116,8 @@ while [ $# -gt 0 ]; do
     shift
 done
 [ -n "$conversation" ] || { conversation="$AGY_NEW_ID"; new=1; }
+# The user opens a native conversation from the idle composer before typing.
+[ -z "${AGY_RESUME_AT_COMPOSER:-}" ] || { conversation="$AGY_RESUME_AT_COMPOSER"; new=""; }
 if [ -n "${AGY_IDLE_SIGNAL_READY:-}" ]; then
     : > "$AGY_IDLE_SIGNAL_READY"
     IFS= read -r _ || true
@@ -231,6 +233,9 @@ if [ -z "${AGY_NO_TURN:-}" ]; then
     # inside "$(...)", and a comma there would then brace-expand.
     extra=$(printf '{"invocationNum": 0, "initialNumSteps": %s}' "${AGY_FIRST_STEPS:-$steps}")
     fire PreInvocation "$(payload "$conversation" "$extra")"
+    if [ -n "${AGY_RESUME_AT_COMPOSER:-}" ]; then
+        grep '^engine:' "$CS_SESSION_META_DIR/local/state" > "$AGY_STATE.after-first" || true
+    fi
     if [ -n "${AGY_PRIVATE_CHANGE:-}" ]; then
         unlink "$CS_SESSION_META_DIR/private" || exit 1
         [ "$AGY_PRIVATE_CHANGE" = removed ] || ln -s "$AGY_PRIVATE_CHANGE" "$CS_SESSION_META_DIR/private" || exit 1
@@ -340,7 +345,7 @@ AGY
     unset AGY_FORKED AGY_BEFORE_RESUME AGY_WATCH_OUT AGY_CAP_NAME CS_TIOCSTI_SYSCTL CS_CODEX_PROBE_OS CS_ANTIGRAVITY_CLEAR_GRACE
     unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT AGY_DOCTOR_OUT AGY_DOCTOR_VERSION AGY_LOCK_HANDOFFS AGY_CLEARED_INVOCATION AGY_DROP_CLEARED_SEEN AGY_EARLY
     unset AGY_MAIL_SUB AGY_ARM_SUB AGY_VAULT_PLANT AGY_VAULT_LINK AGY_VAULT_LINK_TO AGY_VAULT_SEEN CS_ANTIGRAVITY_SHARED_HOME VAULT_HOME
-    unset AGY_BEFORE_CARRY_SUBAGENT AGY_TAMPER_VAULT_CARRY AGY_CARRY_INSPECT_DIR AGY_FIRST_STEPS CS_ASSUME_TTY
+    unset AGY_BEFORE_CARRY_SUBAGENT AGY_TAMPER_VAULT_CARRY AGY_CARRY_INSPECT_DIR AGY_FIRST_STEPS AGY_IDLE_SIGNAL_READY AGY_RESUME_AT_COMPOSER CS_ASSUME_TTY
     _install_agy_hook
     unset CS_DEFAULT_ENGINE CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CS_LEAD_PID CLAUDE_PID
     unset CS_RUN_ENGINE CS_RUN_ID CS_SESSION_DIR CS_SESSION_NAME CS_SESSION_META_DIR
@@ -361,7 +366,7 @@ teardown() {
     unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT AGY_DOCTOR_OUT AGY_DOCTOR_VERSION AGY_LOCK_HANDOFFS AGY_CLEARED_INVOCATION AGY_DROP_CLEARED_SEEN AGY_EARLY
     unset CS_TMUX_BIN AGY_TMUX_LOG CODEX_HOME CS_CODEX_SHARED_HOME
     unset AGY_MAIL_SUB AGY_ARM_SUB AGY_VAULT_PLANT AGY_VAULT_LINK AGY_VAULT_LINK_TO AGY_VAULT_SEEN CS_ANTIGRAVITY_SHARED_HOME VAULT_HOME
-    unset AGY_BEFORE_CARRY_SUBAGENT AGY_TAMPER_VAULT_CARRY AGY_CARRY_INSPECT_DIR AGY_FIRST_STEPS CS_ASSUME_TTY
+    unset AGY_BEFORE_CARRY_SUBAGENT AGY_TAMPER_VAULT_CARRY AGY_CARRY_INSPECT_DIR AGY_FIRST_STEPS AGY_IDLE_SIGNAL_READY AGY_RESUME_AT_COMPOSER CS_ASSUME_TTY
 }
 
 # cs's plugin as the installer writes it, in the test's HOME.
@@ -1517,6 +1522,22 @@ test_finish_starts_agy_on_the_finish_skill() {
     assert_file_contains "$AGY_ARGV" "as if the user had typed /cs:finish feat" "it names the invocation" || return 1
     assert_file_contains "$AGY_ARGV" "Read $skill/SKILL.md" "and the skill's own file" || return 1
     assert_file_contains "$AGY_ARGV" "its scripts are in $skill/scripts/" "and the folder its scripts sit in" || return 1
+}
+
+test_a_finish_open_keeps_its_kickoff_without_a_carry_offer() {
+    local output dir
+    _finish_base lander || return 1
+    _install_finish_skill
+    dir=$(_session_dir lander)
+    _agy_write_claude_source "$dir" 33333333-3333-4333-8333-333333333333
+    : > "$AGY_HOOK_OUT"
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" lander --engine antigravity -finish feat <<< "y" 2>&1) \
+        || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" "continue the Claude conversation in Antigravity" "an explicit finish does not offer carry" || return 1
+    assert_file_contains "$AGY_ARGV" '^--prompt-interactive$' "the merge keeps its kickoff" || return 1
+    assert_file_contains "$AGY_ARGV" '/cs:finish feat' "the kickoff names the feature" || return 1
+    assert_file_contains "$AGY_ARGV" '^--conversation$' "the earlier Antigravity conversation resumes" || return 1
+    assert_file_not_contains "$AGY_HOOK_OUT" "COPPER-OWL" "the kickoff receives no carried history"
 }
 
 # Both refusals come before the open changes anything: an archived base
@@ -3639,7 +3660,8 @@ test_antigravity_reopen_carries_the_newer_claude_conversation() {
     _agy_write_claude_source "$dir" "$claude_id"
     : > "$AGY_HOOK_OUT"
 
-    output=$(AGY_NEW_ID="$new_id" AGY_CLEARED=44444444-4444-4444-8444-444444444444 CS_ASSUME_TTY=1 \
+    # Another PreInvocation hook can already have inserted steps after the prompt.
+    output=$(AGY_FIRST_STEPS=3 AGY_NEW_ID="$new_id" AGY_CLEARED=44444444-4444-4444-8444-444444444444 CS_ASSUME_TTY=1 \
         "$CS_BIN" carry-claude --engine antigravity <<< "y" 2>&1) || { echo "$output"; return 1; }
     assert_output_contains "$output" "The newest conversation here is Claude's" "offer names Claude" || return 1
     assert_output_contains "$output" "continue the Claude conversation in Antigravity" "y describes the carry-over" || return 1
@@ -3755,7 +3777,7 @@ test_antigravity_reopen_e_n_and_esc_do_not_carry() {
 }
 
 test_antigravity_carry_over_guards_no_turn_missing_hook_and_subagent() {
-    local output dir old_id claude_id
+    local output dir old_id claude_id hooks="$HOME/.gemini/config/plugins/cs/hooks.json"
     old_id=11111111-1111-4111-8111-111111111113
     claude_id=33333333-3333-4333-8333-333333333335
     output=$(AGY_NEW_ID="$old_id" "$CS_BIN" carry-guard --engine antigravity </dev/null 2>&1) || { echo "$output"; return 1; }
@@ -3781,12 +3803,29 @@ test_antigravity_carry_over_guards_no_turn_missing_hook_and_subagent() {
     assert_eq 22222222-2222-4222-8222-222222222225 "$(_binding carry-guard)" "main conversation takes the binding" || return 1
     assert_file_contains "$dir/.cs/local/state" '^engine: antigravity$' "a bound carry marks Antigravity as the latest engine" || return 1
 
-    # Missing cs plugin falls back to the usual reopen prompt with one dim line.
-    rm -rf "$HOME/.gemini/config/plugins/cs"
+    # A plugin with PreInvocation but no SessionStart cannot identify a carry.
+    jq '."cs-session" |= del(.SessionStart)' "$hooks" > "$hooks.new" && mv "$hooks.new" "$hooks" || return 1
     _agy_write_claude_source "$dir" "$claude_id"
     output=$(CS_ASSUME_TTY=1 "$CS_BIN" carry-guard --engine antigravity <<< "y" 2>&1) || { echo "$output"; return 1; }
     assert_output_contains "$output" "the Claude conversation cannot be carried over: the cs Antigravity hook is missing or disabled" "missing hook explained" || return 1
     assert_output_contains "$output" "Continue previous Antigravity conversation?" "usual question follows" || return 1
+}
+
+test_antigravity_carry_is_discarded_when_the_first_typed_turn_resumes() {
+    local output dir old_id=11111111-1111-4111-8111-111111111113 cleared_id=44444444-4444-4444-8444-444444444444
+    output=$(AGY_NEW_ID="$old_id" "$CS_BIN" carry-resume --engine antigravity </dev/null 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir carry-resume)
+    _agy_write_claude_source "$dir" 33333333-3333-4333-8333-333333333335
+    : > "$AGY_HOOK_OUT"
+    output=$(AGY_RESUME_AT_COMPOSER="$old_id" AGY_CLEARED="$cleared_id" CS_ASSUME_TTY=1 \
+        "$CS_BIN" carry-resume --engine antigravity <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "Carrying over the Claude conversation" "carry was staged at the idle composer" || return 1
+    assert_file_not_contains "$AGY_ARGV" '^--conversation$' "the user resumed natively, not through launch arguments" || return 1
+    assert_file_not_contains "$AGY_HOOK_OUT" "COPPER-OWL" "the resumed conversation receives no carry" || return 1
+    assert_file_not_contains "$AGY_HOOK_OUT.cleared" "COPPER-OWL" "a later /clear receives no stale carry" || return 1
+    assert_file_contains "$AGY_STATE.after-first" '^engine: antigravity$' "resuming the same ID records Antigravity on its first turn" || return 1
+    assert_eq "$cleared_id" "$(_binding carry-resume)" "normal /clear still rebinds" || return 1
+    assert_file_not_contains "$dir/.cs/timeline.jsonl" '"reason":"transplant"' "no transplant was recorded"
 }
 
 test_antigravity_carry_digest_does_not_depend_on_workspace_imports() {
@@ -3941,6 +3980,7 @@ test_antigravity_carry_survives_a_failed_binding_write() {
         mkdir -p "$dir/.cs/local" "$run_dir"
         printf '%s\n' "$old_id" > "$dir/.cs/local/antigravity-conversation"
         printf 'fresh\n' > "$run_dir/opened"
+        printf '%s\n' "$new_id" > "$run_dir/carry-conversation"
         printf 'codex:33333333-3333-4333-8333-333333333333\n' > "$run_dir/carry-source"
         printf '{"steps":[{"systemMessage":{"systemMessage":"Carried notes"}}]}\n' > "$run_dir/carry.json"
         local AGY_HOOK_INVOCATION=0 AGY_HOOK_TYPED=1 AGY_HOOK_STEPS=1
@@ -4016,6 +4056,7 @@ run_test test_an_agy_without_an_interactive_prompt_leaves_a_spawn_seed_staged
 run_test test_the_spawns_own_window_resumes_with_the_kickoff_without_asking
 run_test test_a_spawn_without_a_usable_hook_sends_the_brief_without_doubt
 run_test test_finish_starts_agy_on_the_finish_skill
+run_test test_a_finish_open_keeps_its_kickoff_without_a_carry_offer
 run_test test_finish_refuses_before_agy_without_the_skill_or_the_prompt_flag
 run_test test_a_rotation_handoff_takes_a_finish_launch
 run_test test_a_finish_open_leaves_a_spawn_seed_staged
@@ -4122,6 +4163,7 @@ run_test test_antigravity_reopen_carries_the_newer_codex_conversation
 run_test test_antigravity_carries_only_existing_codex_history_from_its_vault
 run_test test_antigravity_reopen_e_n_and_esc_do_not_carry
 run_test test_antigravity_carry_over_guards_no_turn_missing_hook_and_subagent
+run_test test_antigravity_carry_is_discarded_when_the_first_typed_turn_resumes
 run_test test_antigravity_carry_digest_does_not_depend_on_workspace_imports
 run_test test_antigravity_carry_sigint_removes_the_preview_only
 run_test test_antigravity_carry_sigterm_removes_the_staged_vault_file_only
