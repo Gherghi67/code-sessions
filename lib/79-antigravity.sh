@@ -1184,7 +1184,7 @@ _antigravity_hook_session_start() {  # payload
 # (_antigravity_hook_retake). The first model call of a turn carries the
 # unread mail, after the rotation, in one answer.
 _antigravity_hook_pre_invocation() {  # payload
-    local run_dir meta="$CS_SESSION_DIR/.cs" rotation="" weigh="" AGY_HOOK_DIGEST="" stop="" failed=""
+    local run_dir meta="$CS_SESSION_DIR/.cs" bind_reply="" weigh="" AGY_HOOK_DIGEST="" stop="" failed=""
     run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || run_dir=""
     # An encrypted session's vault home is checked before every model call of
     # the run that holds the lease; anything a command changed there stops the
@@ -1210,27 +1210,20 @@ _antigravity_hook_pre_invocation() {  # payload
         weigh=1
     fi
     if [ -n "$weigh" ] && cs_run_lease_owned "$meta"; then
-        # The lease runs its callback in a subshell, so the rotation comes
-        # back on descriptor 3; nothing else the callback prints is kept.
-        rotation=$(cs_run_with_lease "$meta" _antigravity_hook_bind "$CS_SESSION_DIR" "$AGY_HOOK_ID" "$run_dir" \
-            3>&1 >/dev/null 2>&1) || true
+        # The lease runs its callback in a subshell. Descriptor 3 carries the
+        # reply back in memory, including encrypted carry bytes, without a
+        # second read from the vault or a plaintext file in the run cache.
+        if ! bind_reply=$(cs_run_with_lease "$meta" _antigravity_hook_bind "$CS_SESSION_DIR" "$AGY_HOOK_ID" "$run_dir" \
+            3>&1 >/dev/null 2>&1) && _antigravity_carry_pending "$run_dir"; then
+            ANTIGRAVITY_HOOK_REPLY=$(_antigravity_hook_vault_error 'cs stopped this turn: it could not verify or bind the carried conversation. Close and reopen the session to retry the carry.')
+            return 0
+        fi
     fi
     [ "$AGY_HOOK_INVOCATION" != 0 ] || _antigravity_hook_mail_digest "$AGY_HOOK_ID"
-    local carry_deliver=""
-    if [ -n "$run_dir" ] && [ -f "$run_dir/carry-deliver.path" ] && [ ! -L "$run_dir/carry-deliver.path" ]; then
-        IFS= read -r carry_deliver < "$run_dir/carry-deliver.path" 2>/dev/null || carry_deliver=""
-        rm -f "$run_dir/carry-deliver.path" 2>/dev/null || true
-    fi
-    if [ -n "$carry_deliver" ] && [ -f "$carry_deliver" ] && [ ! -L "$carry_deliver" ]; then
-        ANTIGRAVITY_HOOK_REPLY=$(jq -nc --slurpfile c "$carry_deliver" --arg r "$rotation" --arg m "$AGY_HOOK_DIGEST" '
-            {injectSteps: (($c[0].steps // []) + ([$r, $m] | map(select(. != "") | {systemMessage: {systemMessage: .}}))),
-             terminationBehavior: ""}' 2>/dev/null) || ANTIGRAVITY_HOOK_REPLY=""
-        rm -f "$carry_deliver" 2>/dev/null || true
-        return 0
-    fi
-    [ -n "$rotation$AGY_HOOK_DIGEST" ] || return 0
-    ANTIGRAVITY_HOOK_REPLY=$(jq -nc --arg r "$rotation" --arg m "$AGY_HOOK_DIGEST" '
-        {injectSteps: ([$r, $m] | map(select(. != "") | {systemMessage: {systemMessage: .}})),
+    [ -n "$bind_reply$AGY_HOOK_DIGEST" ] || return 0
+    [ -n "$bind_reply" ] || bind_reply='{}'
+    ANTIGRAVITY_HOOK_REPLY=$(printf '%s\n' "$bind_reply" | jq -c --arg m "$AGY_HOOK_DIGEST" '
+        {injectSteps: ((.steps // []) + ([.rotation // "", $m] | map(select(. != "") | {systemMessage: {systemMessage: .}}))),
          terminationBehavior: ""}' 2>/dev/null) || ANTIGRAVITY_HOOK_REPLY=""
 }
 
@@ -1240,54 +1233,47 @@ _antigravity_carry_pending() {  # run_dir
         || { [ -f "$1/carry-digest" ] && [ ! -L "$1/carry-digest" ]; }; }
 }
 
-# Validate and claim the staged carry-over payload under the run lease, leaving
-# its verified file path in $run_dir/carry-deliver.path for PreInvocation to
-# read via jq --slurpfile and delete immediately.
-_antigravity_carry_claim() {  # run_dir
-    local run_dir="$1" source="" expected="" actual="" vault_file="" deliver=""
-    [ -f "$run_dir/carry-source" ] && [ ! -L "$run_dir/carry-source" ] || {
-        rm -f "$run_dir/carry.json" "$run_dir/carry-digest" "$run_dir/carry-source" 2>/dev/null || true
-        return 1
-    }
-    IFS= read -r source < "$run_dir/carry-source" 2>/dev/null || {
-        rm -f "$run_dir/carry.json" "$run_dir/carry-digest" "$run_dir/carry-source" 2>/dev/null || true
-        return 1
-    }
-    case "$source" in
-        claude:*|codex:*) _is_uuid "${source#*:}" || {
-            rm -f "$run_dir/carry.json" "$run_dir/carry-digest" "$run_dir/carry-source" 2>/dev/null || true
-            return 1
-        } ;;
-        *)
-            rm -f "$run_dir/carry.json" "$run_dir/carry-digest" "$run_dir/carry-source" 2>/dev/null || true
-            return 1
-            ;;
+# The vault file can change during the hook. Hash and return the same bytes
+# from one no-follow open, with isolated Python imports as at launch.
+_antigravity_carry_read() {  # file, expected digest or empty for the protected cache
+    python3 -I -c '
+import hashlib, os, stat, sys
+
+with os.fdopen(os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as handle:
+    info = os.fstat(handle.fileno())
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+        sys.exit(1)
+    data = handle.read()
+if sys.argv[2] and hashlib.sha256(data).hexdigest() != sys.argv[2]:
+    sys.exit(1)
+sys.stdout.buffer.write(data)
+' "$1" "$2"
+}
+
+# Read into the binding callback's locals without changing the staged files.
+# A failed binding leaves both the payload and its lineage available to retry.
+_antigravity_carry_load() {  # run_dir
+    local run_dir="$1" expected="" file="$1/carry.json"
+    [ -f "$run_dir/carry-source" ] && [ ! -L "$run_dir/carry-source" ] \
+        && IFS= read -r carried_from < "$run_dir/carry-source" || return 1
+    case "$carried_from" in
+        claude:*|codex:*) _is_uuid "${carried_from#*:}" || return 1 ;;
+        *) return 1 ;;
     esac
     if [ -f "$run_dir/carry-digest" ] && [ ! -L "$run_dir/carry-digest" ]; then
-        IFS= read -r expected < "$run_dir/carry-digest" 2>/dev/null || expected=""
-        vault_file="${_cs_private_pin_dir:-}/.cs-carry-$CS_RUN_ID.json"
-        if [ -z "$expected" ] || [ -z "${_cs_private_pin_dir:-}" ] \
-            || [ ! -f "$vault_file" ] || [ -L "$vault_file" ] \
-            || ! actual=$(_antigravity_carry_sha256 "$vault_file") \
-            || [ "$actual" != "$expected" ]; then
-            rm -f "$run_dir/carry-digest" "$run_dir/carry-source" 2>/dev/null || true
-            return 1
-        fi
-        deliver="$vault_file"
-        rm -f "$run_dir/carry-digest" "$run_dir/carry-source" 2>/dev/null || true
-    elif [ -f "$run_dir/carry.json" ] && [ ! -L "$run_dir/carry.json" ]; then
-        mv -f "$run_dir/carry.json" "$run_dir/carry-deliver.json" || {
-            rm -f "$run_dir/carry.json" "$run_dir/carry-source" 2>/dev/null || true
-            return 1
-        }
-        deliver="$run_dir/carry-deliver.json"
-        rm -f "$run_dir/carry-source" 2>/dev/null || true
-    else
-        rm -f "$run_dir/carry-source" 2>/dev/null || true
-        return 1
+        IFS= read -r expected < "$run_dir/carry-digest" \
+            && [ -n "$expected" ] && [ -n "${_cs_private_pin_dir:-}" ] || return 1
+        file="$_cs_private_pin_dir/.cs-carry-$CS_RUN_ID.json"
     fi
-    _antigravity_mail_state_write "$run_dir/carry-deliver.path" "$deliver"$'\n' || return 1
-    printf '%s\n' "$source"
+    carry_payload=$(_antigravity_carry_read "$file" "$expected" | jq -ces '
+        select(length == 1) | .[0] | select(.steps | type == "array" and length > 0) | {steps}')
+}
+
+_antigravity_carry_discard() {  # run_dir
+    if [ -n "${_cs_private_pin_dir:-}" ]; then
+        rm -f "$_cs_private_pin_dir/.cs-carry-$CS_RUN_ID.json" 2>/dev/null || true
+    fi
+    rm -f "$1/carry.json" "$1/carry-digest" "$1/carry-source"
 }
 
 # Under the run lease. The session is bound to its run's first conversation,
@@ -1302,6 +1288,7 @@ _antigravity_carry_claim() {  # run_dir
 # binds only a session that has no conversation yet (or the legacy word).
 _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
     local session_dir="$1" id="$2" run_dir="$3" previous opened="" source=startup reason=fresh log_dir handoff="" receipt_dir carried_from=""
+    local carry_payload=""
     if [ -n "$run_dir" ]; then
         if _antigravity_explicit_resume_pending "$run_dir"; then
             local expected
@@ -1345,15 +1332,20 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
             return 0
         fi
         if [ -n "$run_dir" ] && _antigravity_carry_pending "$run_dir"; then
-            if carried_from=$(_antigravity_carry_claim "$run_dir"); then
-                source=transplant
-                reason=transplant
-            fi
+            _antigravity_carry_load "$run_dir" || return 1
+            source=transplant
+            reason=transplant
         fi
         if [ "$previous" != "$id" ]; then
             cs_binding_write "$session_dir" antigravity "$id" || return 1
+        fi
+        if [ "$previous" != "$id" ] || [ -n "$carry_payload" ]; then
             _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine antigravity || return 1
         fi
+    fi
+    if [ -n "$carry_payload" ]; then
+        _antigravity_carry_discard "$run_dir" || return 1
+        printf '%s\n' "$carry_payload" >&3
     fi
     # Both log lines go to .cs/local, or into the vault for a run the launch
     # ran on the vault home (_antigravity_log_dir); a .cs/private that came
@@ -1451,7 +1443,7 @@ $(_handoff_refusal_warning "$shown/$handoff" "$refusal" "$(_codex_marker_shown "
         fi
     fi
     if [ -n "$context" ]; then
-        { printf '%s' "$context" >&3; } 2>/dev/null || true
+        { jq -nc --arg context "$context" '{rotation: $context}' >&3; } 2>/dev/null || true
     fi
     if log_dir=$(_antigravity_log_dir "$session_dir" "$run_dir"); then
         CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Rebound antigravity conversation: %s -> %s\n' \

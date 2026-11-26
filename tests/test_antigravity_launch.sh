@@ -3823,13 +3823,53 @@ test_antigravity_encrypted_carry_stays_inside_vault_and_verifies_digest() {
     assert_file_contains "$AGY_HOOK_OUT" "COPPER-OWL" "vault carry delivers cleanly" || return 1
     assert_eq 0 "$(find "$dir/.cs/vault-mnt/private" -name '.cs-carry*' 2>/dev/null | wc -l | tr -d ' ')" "vault carry file deleted after delivery" || return 1
 
-    # Tampered vault carry file fails digest verification and delivers nothing.
+    # A carry whose contents no longer match its digest stops the turn without rebinding.
     _agy_write_claude_source "$dir" "$claude_id" "$dir/.cs/claude-config/projects"
     : > "$AGY_HOOK_OUT"
     output=$(AGY_NEW_ID=22222222-2222-4222-8222-222222222227 AGY_TAMPER_VAULT_CARRY=1 CS_ASSUME_TTY=1 \
         "$CS_BIN" carry-vault --engine antigravity <<< "y" 2>&1) || { echo "$output"; return 1; }
     assert_file_not_contains "$AGY_HOOK_OUT" "TAMPERED" "tampered vault carry file is rejected" || return 1
+    assert_eq 1 "$(jq -s '[.[] | select(.terminationBehavior == "terminate")] | length' "$AGY_HOOK_OUT")" \
+        "digest failure stops the model turn" || return 1
+    assert_eq "$new_id" "$(_binding carry-vault)" "digest failure preserves the binding" || return 1
+    assert_file_contains "$dir/.cs/local/state" '^engine: claude$' "digest failure preserves the source engine" || return 1
     assert_eq 0 "$(find "$dir/.cs/vault-mnt/private" -name '.cs-carry*' 2>/dev/null | wc -l | tr -d ' ')" "tampered vault carry file cleaned on exit" || return 1
+}
+
+test_antigravity_carry_survives_a_failed_binding_write() {
+    (
+        local fragment dir run_dir result
+        local old_id=22222222-2222-4222-8222-222222222227 new_id=22222222-2222-4222-8222-222222222228
+        for fragment in "$SCRIPT_DIR"/../lib/[0-9]*-*.sh; do
+            # shellcheck disable=SC1090
+            [ "${fragment##*/}" = 99-main.sh ] || source "$fragment"
+        done
+        dir="$TEST_TMPDIR/carry-session"
+        run_dir="$TEST_TMPDIR/carry-run"
+        mkdir -p "$dir/.cs/local" "$run_dir"
+        printf '%s\n' "$old_id" > "$dir/.cs/local/antigravity-conversation"
+        printf 'fresh\n' > "$run_dir/opened"
+        printf 'codex:33333333-3333-4333-8333-333333333333\n' > "$run_dir/carry-source"
+        printf '{"steps":[{"systemMessage":{"systemMessage":"Carried notes"}}]}\n' > "$run_dir/carry.json"
+        local AGY_HOOK_INVOCATION=0 AGY_HOOK_TYPED=1 AGY_HOOK_STEPS=1
+        if (
+            cs_binding_write() { return 1; }
+            _antigravity_hook_bind "$dir" "$new_id" "$run_dir"
+        ) 3>"$TEST_TMPDIR/failed-carry"; then
+            echo '  FAIL: binding failure must interrupt the carry'; exit 1
+        fi
+        assert_file_exists "$run_dir/carry.json" "failed binding retains the staged payload" || exit 1
+        assert_file_exists "$run_dir/carry-source" "failed binding retains source lineage" || exit 1
+        assert_not_exists "$run_dir/bound" "failed binding does not mark the run bound" || exit 1
+        assert_eq "$old_id" "$(cs_binding_read "$dir" antigravity)" "failed write preserves old binding" || exit 1
+        assert_eq '' "$(cat "$TEST_TMPDIR/failed-carry")" "failed binding publishes no carry reply" || exit 1
+
+        result=$(_antigravity_hook_bind "$dir" "$new_id" "$run_dir" 3>&1) || exit 1
+        assert_eq "$new_id" "$(cs_binding_read "$dir" antigravity)" "retry binds the conversation" || exit 1
+        assert_eq 'Carried notes' "$(printf '%s\n' "$result" | jq -r '.steps[0].systemMessage.systemMessage')" \
+            "retry delivers the original payload" || exit 1
+        assert_not_exists "$run_dir/carry.json" "successful binding consumes the payload"
+    )
 }
 
 run_test test_handoff_launch_binds_consumes_and_resumes_without_replay
@@ -3992,4 +4032,5 @@ run_test test_antigravity_reopen_e_n_and_esc_do_not_carry
 run_test test_antigravity_carry_over_guards_no_turn_missing_hook_and_subagent
 run_test test_antigravity_carry_digest_does_not_depend_on_workspace_imports
 run_test test_antigravity_encrypted_carry_stays_inside_vault_and_verifies_digest
+run_test test_antigravity_carry_survives_a_failed_binding_write
 report_results
