@@ -3808,6 +3808,14 @@ test('tasks queued while the queue runs, or while a turn runs, draw a queue word
   expect(await band()).toBe(DRAWN)
 })
 
+test('a queue waiting for background work shows the pause without offering Start', async () => {
+  queueTasks(2)
+  files['/work/.cs/local/queue.state'] = 'waiting-background\n'
+  const tree = await band()
+  expect(queueKey(tree)).toBeUndefined()
+  expect(restingWords(tree)).toEqual(['▤ queue 2 waiting for background work'])
+})
+
 test('the queue word stands at the left, alone past the threshold too, and draws no right edge', async () => {
   queueTasks(2)
   files['/work/.cs/local/queue.state'] = 'armed\n'

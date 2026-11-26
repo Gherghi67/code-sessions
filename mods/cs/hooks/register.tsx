@@ -361,6 +361,7 @@ type BandFacts = {
   gate?: string
   queued: number
   queueRunning: boolean
+  queueWaitingForBackground?: boolean
   // The queue glyph's amber, as the status line draws its queue count.
   queueInk: string
   mail: number
@@ -391,7 +392,10 @@ export function buildBandEntries(facts: BandFacts): BandEntry[] {
     entries.push(onPress === undefined ? { key: 'cs-features', kind: 'word', label } : { key: 'cs-features', kind: 'press', label, onPress })
   }
   if (facts.gate !== undefined) entries.push({ key: 'cs-gate', kind: 'word', label: facts.gate })
-  if (facts.queued > 0) entries.push({ key: 'cs-queued', kind: 'word', label: `${QUEUE_GLYPH} queue ${facts.queued}${facts.queueRunning ? ' running' : ''}`, ink: { lead: QUEUE_GLYPH, color: facts.queueInk } })
+  if (facts.queued > 0) {
+    const status = facts.queueWaitingForBackground ? ' waiting for background work' : facts.queueRunning ? ' running' : ''
+    entries.push({ key: 'cs-queued', kind: 'word', label: `${QUEUE_GLYPH} queue ${facts.queued}${status}`, ink: { lead: QUEUE_GLYPH, color: facts.queueInk } })
+  }
   if (facts.mail > 0) entries.push({ key: 'cs-mail', kind: 'word', label: `mail ${facts.mail}` })
   return entries
 }
@@ -548,7 +552,7 @@ export function register(on: On) {
       return { text: REPLIES.queued(task) }
     }
     const queuedHeading = /^Queued \((\d+)\)$/m.exec(result.stdout)
-    if (queuedHeading && !(await queueRunning($))) void offerToStart($, bin, Number(queuedHeading[1]))
+    if (queuedHeading && !(await activeQueueState($))) void offerToStart($, bin, Number(queuedHeading[1]))
     return { text: result.stdout.trimEnd() }
   })
 
@@ -719,8 +723,8 @@ export function register(on: On) {
       // start key does not offer (the queue runs them, a turn runs, or the
       // clear key stands alone) are said, not pressed.
       const queue = e.props.hasSurvey ? 0 : await queueLength($)
-      const queueStarted = queue > 0 && (await queueRunning($))
-      let waiting = !bandIdle || armed || queueStarted ? 0 : queue
+      const queueState = queue > 0 ? await activeQueueState($) : undefined
+      let waiting = !bandIdle || armed || queueState ? 0 : queue
       let queued = waiting > 0 ? 0 : queue
       // Mail from other sessions that `cs -msg` has not read yet.
       let mail = e.props.hasSurvey ? 0 : await unreadMail($)
@@ -766,7 +770,8 @@ export function register(on: On) {
       const entries = buildBandEntries({
         featured: featured === undefined ? undefined : { label: featured.label, onPress: finish === undefined || !bandIdle ? undefined : () => pressFinish($, finish) },
         countdown: armed && left !== undefined ? { seconds: left, ink: await rampColor($, left) } : undefined,
-        rotating, armed, switching: target, wrapping, waiting, gate, queued, queueRunning: queueStarted, mail,
+        rotating, armed, switching: target, wrapping, waiting, gate, queued, queueRunning: queueState !== undefined,
+        queueWaitingForBackground: queueState === 'waiting-background', mail,
         queueInk: amberColor(bg, theme),
         filterChat: offersFilterChat ? { on: filterChat, onPress: () => pressFilterChat($) } : undefined,
         rotate: armed ? () => pressClear($) : () => pressRotate($),
@@ -2200,7 +2205,7 @@ async function handoffArmed($: EngineInterface): Promise<boolean> {
 // The armed handoff's text, read under the rule above; undefined when unarmed.
 // Each marker names a handoff in its own store only: the vault's marker never
 // arms from the plaintext store, nor the reverse. The marker is read rather
-// than probed for, as queueRunning does: a read follows the .cs/private link
+// than probed for, as activeQueueState does: a read follows the .cs/private link
 // the way the hook's own does, and a marker that cannot be read (absent, or
 // behind a locked vault) arms nothing.
 async function armedHandoff($: EngineInterface): Promise<string | undefined> {
@@ -2629,12 +2634,12 @@ async function askToWrap($: EngineInterface) {
   }
 }
 
-// An armed or draining queue is already on its way; only bin/cs and the Stop
-// hook write the file, and no file is an idle queue.
+// An armed, draining, or waiting queue is already on its way. No file is
+// an idle queue.
 // An encrypted session keeps its queue behind .cs/private (a link into its
 // vault), every other session in .cs/local. A file that cannot be read (absent,
 // or behind a locked vault) says nothing about the queue.
-async function queueRunning($: EngineInterface): Promise<boolean> {
+async function activeQueueState($: EngineInterface): Promise<'armed' | 'draining' | 'waiting-background' | undefined> {
   const cwd = await $.session.cwd()
   for (const dir of ['private', 'local']) {
     let state: string
@@ -2643,9 +2648,9 @@ async function queueRunning($: EngineInterface): Promise<boolean> {
     } catch {
       continue
     }
-    return state === 'armed' || state === 'draining'
+    return state === 'armed' || state === 'draining' || state === 'waiting-background' ? state : undefined
   }
-  return false
+  return undefined
 }
 
 // How many tasks are queued, whether or not the queue runs them; 0 when it is
@@ -2686,7 +2691,7 @@ async function unreadMail($: EngineInterface): Promise<number> {
 // armed or draining, empty, or cannot be read.
 async function idleQueueLength($: EngineInterface): Promise<number> {
   const count = await queueLength($)
-  if (count === 0 || (await queueRunning($))) return 0
+  if (count === 0 || (await activeQueueState($))) return 0
   return count
 }
 
@@ -2865,7 +2870,7 @@ export function finishToast(record: FinishRecord): string {
   }
 }
 
-// The record as cs wrote it, from the vault's store first, as queueRunning
+// The record as cs wrote it, from the vault's store first, as activeQueueState
 // reads; undefined when there is none. One cs did not write (hand-edited, or
 // from another version) is said once and otherwise read as no record, since
 // the watch would only repeat the complaint every second.

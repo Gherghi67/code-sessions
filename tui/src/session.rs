@@ -644,12 +644,13 @@ pub fn queue_dir(name: &str) -> PathBuf {
 }
 
 /// True while the session's queue drain is live: cs's Stop hook writes
-/// `draining` to queue.state when it hands tasks to the agent. The task being
+/// `draining` to queue.state when it hands tasks to the agent, and
+/// `waiting-background` when the active task has background work. The task being
 /// worked is the one queue.current names, which is the first queued file unless
 /// that task was removed or a file that sorts ahead of it was queued since.
 pub fn queue_active(name: &str) -> bool {
     fs::read_to_string(queue_dir(name).join("queue.state"))
-        .map(|s| s.trim() == "draining")
+        .map(|s| matches!(s.trim(), "draining" | "waiting-background"))
         .unwrap_or(false)
 }
 
@@ -2834,6 +2835,8 @@ mod tests {
         assert_eq!(queue_dir("vt"), dir.join("root/vt/.cs/private"));
         assert_eq!(read_queue("vt"), vec!["sealed task".to_string()]);
         assert!(queue_active("vt"));
+        fs::write(vault.join("queue.state"), "waiting-background\n").unwrap();
+        assert!(queue_active("vt"), "waiting for background work preserves the active task");
         let scanned = scan_sessions_in(&dir.join("root"));
         assert_eq!(scanned.iter().find(|s| s.name == "vt").map(|s| s.queue_depth), Some(1));
         fs::rename(dir.join("vault"), dir.join("unmounted")).unwrap();

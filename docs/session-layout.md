@@ -195,7 +195,7 @@ removes anything, except the prompt hook's launch mark in `scope-prompt.trace`.
 | `vault-waiter.pid` | The background waiter the SessionEnd hook leaves to unmount the vault once the lead conversation's Claude Code exits. An open that finds the vault mounted with nothing alive behind it stops this waiter first. |
 | `vault-detach.pid` | The `diskutil eject` that waiter started, so a reopen can stop an unmount in flight. |
 | `queue/` | The walk-away task queue (`cs -queue`): one file per task, staged in `queue.tmp/` and renamed into place so the drain never reads a torn entry. The drain hands out the lexically first file and records its name in `queue.current`. When that task's turn ends, the drain pops the file `queue.current` names by moving it aside, so a second drain that races it loses the rename. |
-| `queue.state` | Drain state machine for the queue: `idle`, `armed`, or `draining`. [Queue states and transitions](#queue-states-and-transitions) lists what writes and reads it. |
+| `queue.state` | Queue drain state. One of `idle`, `armed`, `draining`, or `waiting-background`. [Queue states and transitions](#queue-states-and-transitions) lists what writes and reads it. |
 | `queue.mode` | How a started run hands over its tasks: `subagents` or `workflow`; absent runs them in the conversation. Written by `cs -queue start` with a mode. Removed by `cs -queue start` without one, by `cs -queue clear`, and by the drain when the run finishes. A run that parks for any reason, or loses its pop, keeps it until the next `cs -queue start` or `cs -queue clear`. The open of a `cs -spawn`ed session arms the queue without touching this file, so that run hands over its tasks in whatever mode the file still holds. |
 | `queue.done` | Log of completed queued tasks, appended as each is drained. |
 | `queue.current` | Name of the queue file the drain last handed out. Only that task is logged done when its turn ends, and a draining queue with no such record parks instead of guessing. Removed when the run finishes, parks, or the queue is cleared. |
@@ -255,12 +255,19 @@ When `queue.current` names a task that is no longer in `queue/`, the pop logs no
 
 When `_qstate_write` cannot write `idle`, it removes `queue.state` instead, which reads as `idle`. When it can do neither, or when any other `queue.state` or `queue.current` write fails, the `Stop` approves with a `cs task queue: could not write <path>` message and exits. A park writes `idle` before the pop, so a failed write there leaves `draining` with the task still queued, and the next `Stop` runs the same checks on the same task. The armed branch writes `queue.current` before `queue.state`, so a failed state write leaves `armed` with `queue.current` naming the first task. An advance writes `queue.current` after the pop, so a failed write leaves it naming the finished task, and the next `Stop` logs nothing and hands out the first task.
 
-Four files read `queue.state`, and each one reads it only while the queue holds a task:
+On a Claude Stop with running or pending subagents, workflows, or cloud
+sessions, the active drain writes `waiting-background` and records one
+`drain_waiting_background` event in `notifications.jsonl`. The current task
+stays first in the queue. The next Stop without work in flight returns to
+`draining` or parks the queue if a breaker trips. The band and `cs -queue list`
+show the wait. Starting a queue that is waiting follows the same rule as
+starting a draining queue.
 
-- `hooks/stop-blocks.sh` removes all whitespace (`tr -d '[:space:]'`). The drain hands out a task only for `armed` or `draining`. The mail wake on `FileChanged` stands down for the same two words while `queue/` holds a task. The mail wake on `Stop` reads no queue state. Every `armed` or `draining` branch of the drain exits before that wake, except a lost pop, which writes `idle` and goes on to the wake.
-- `hooks/stop-notices.sh` removes all whitespace and stands its notices down for `armed` or `draining`.
-- The cs mod's `queueRunning` (`mods/cs/hooks/register.tsx`) trims the line and counts `armed` or `draining` as running. It reads `.cs/private/queue.state` first, and `.cs/local/queue.state` only when it cannot read the first.
-- cs-tui's `queue_active` (`tui/src/session.rs`) trims the line and is true only for `draining`, so cs-tui shows an `armed` queue as not running.
+The queue state also controls notifications and the picker.
+
+- `hooks/stop-blocks.sh` and `hooks/stop-notices.sh` stand down mail wakes and notices while a queue with tasks is armed, draining, or waiting for background work.
+- The cs mod reads `.cs/private/queue.state` first and falls back to `.cs/local/queue.state` when the first is unreadable.
+- cs-tui treats `draining` and `waiting-background` as having an active task. Codex and Antigravity apply their usual interrupted-task rules if they open a queue that Claude left in `waiting-background`.
 
 Every reader treats an unknown word, an absent file and an unreadable file as a queue that is not running. The drain then hands out nothing, the mail wake and the notices go ahead, and the band offers its start key.
 

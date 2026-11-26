@@ -2121,7 +2121,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "194ae2bab98c8a0f7fcd85cbc2e86494d6b841a6cf84e7ccb9428e72076a651c  bin/cs"
+    "1e707bbbeaf416fdcc0d99ee9cceada0375ed8f33acecb22b3d5bb877ad184fe  bin/cs"
     "daa73d86fbf428a84f5ef4c1f8fa355d6295c056dbc690eb2e433a8ff03f8437  bin/cs-secrets"
     "aa2189ba7d67ce63eaea645fbd54ec0ee92741c0c0d1b037441c6093106158f3  bin/cs-codex-thread"
     "92fbf3b94c270ac607ea8796e826b95d7a062b25cbced9bf1004ff9516224775  bin/cs-statusline"
@@ -2137,8 +2137,8 @@ CS_PAYLOAD_SHA256=(
     "b3704bde599a45a4f2d2a8b0ccd16e01869ef7ba6dcc85e642e306448ded7d44  hooks/prompt-rewriter-vendor.sh"
     "4ab3304e03530d5ee8625f8e51f097480875a67d336cd9b761aa995f5f689042  hooks/session-start.sh"
     "e0a2562432ed9b7b63f73fdb3fd858a3f86b225063c3f62c4ec886a30ecc4c51  hooks/autosave-commits.sh"
-    "af3e02a0084e9945ce5d320d5b19a1a8dbb7bb48a494ffbf0a81eb0dbbf7564e  hooks/stop-blocks.sh"
-    "15c2528a466640da5a06b29e00aabfc5a1b96c6405839e3280fc5c57359f6de6  hooks/stop-notices.sh"
+    "78bb4f1fa0c7640bd977a21a0155e27a2bde126741dee27eaff7dc82fa60ad5e  hooks/stop-blocks.sh"
+    "cc02791505cd805aee3965ce7c722c8b7b1e181ec79f849061341e915aed65f3  hooks/stop-notices.sh"
     "3a6052ed62bf9e16dbab777108ec1a2361ab88fee562d0da02b784698c16fa88  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
@@ -2164,7 +2164,7 @@ CS_PAYLOAD_SHA256=(
     "e52b2e65cac2da7bc10691470cbad6e69fef7ffe120bde317f98e5218e1a9308  skills/sweep/scripts/cs-shared.sh"
     "a999b85473187e2d79fa94f8e3f5532a4510939114032f692e2e9003a155f40b  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
-    "b244095369277a614cd72b7aaa4d8d64aeb111196976d1722366b7a8f23046b8  mods/cs/hooks/register.tsx"
+    "394190c755d4be22fb79e8c8a2024d3a152391d81e3a9679c85c2bb973770de1  mods/cs/hooks/register.tsx"
     "dbea12f3c4290e7a36bfcad8350cc468d3d2851ce2d3434ee7be94426900131b  mods/cs/tips.json"
     "2f8d4b45beddd0b27b050f1c2eb08ebb25552b4dea5f33b9398318a2ef636985  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"

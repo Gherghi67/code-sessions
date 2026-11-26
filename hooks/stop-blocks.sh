@@ -393,7 +393,7 @@ if [ "$HOOK_EVENT" = "FileChanged" ]; then
     # breaker. An empty queue is never gating, whatever queue.state records.
     if [ "$(_qlen "$CS_FILES/queue")" -gt 0 ]; then
         _fc_qstate=$(cat "$CS_FILES/queue.state" 2>/dev/null | tr -d '[:space:]' || true)
-        case "$_fc_qstate" in armed|draining) exit 0 ;; esac
+        case "$_fc_qstate" in armed|draining|waiting-background) exit 0 ;; esac
     fi
     _mail_scan
     _mail_apply_silencers
@@ -1009,7 +1009,7 @@ $RUN_MODE$SCOPE"
         _stop_block "$REASON"
     fi
 
-    if [ "$QSTATE" = "draining" ]; then
+    if [ "$QSTATE" = draining ] || [ "$QSTATE" = waiting-background ]; then
         # Which task the turn that just ended was working on. With no usable
         # record nothing can be logged done, and handing out the first task
         # could run again one that is finished, so the run parks.
@@ -1066,16 +1066,29 @@ $RUN_MODE$SCOPE"
         case "$TRIP" in
             failures\ *|task_failed\ *) ;;
             *)
-                BG_AGENTS=$(printf '%s' "$INPUT" | jq -r '[.background_tasks[]? | objects | select(.type == "subagent" or .type == "workflow" or .type == "cloud session")] | length' 2>/dev/null) || BG_AGENTS=0
+                BG_AGENTS=$(printf '%s' "$INPUT" | jq -r '
+                    [.background_tasks[]? | objects
+                     | select(.type == "subagent" or .type == "workflow" or .type == "cloud session")
+                     | select(.status == "running" or .status == "pending")] | length
+                ' 2>/dev/null) || BG_AGENTS=0
                 case "$BG_AGENTS" in ''|*[!0-9]*) BG_AGENTS=0 ;; esac
                 if [ "$BG_AGENTS" -gt 0 ]; then
+                    if [ "$QSTATE" != waiting-background ]; then
+                        _qstate_write waiting-background
+                        _inbox_append --arg ts "$(date +%s)" --arg count "$BG_AGENTS" \
+                            '{ts: ($ts|tonumber), event: "drain_waiting_background", detail: "waiting for \($count) background task(s)"}'
+                    fi
                     jq -nc --arg m "cs task queue: $BG_AGENTS background agent$([ "$BG_AGENTS" = 1 ] || printf s) still running, so the task in progress is not logged done and the next one waits until none is." \
                         '{decision:"approve", systemMessage:$m}'
                     exit 0
                 fi
                 ;;
         esac
-        [ -z "$TRIP" ] || _qstate_write idle
+        if [ -n "$TRIP" ]; then
+            _qstate_write idle
+        elif [ "$QSTATE" = waiting-background ]; then
+            _qstate_write draining
+        fi
         case "$TRIP" in
             failures\ *|task_failed\ *)
                 set -- $TRIP

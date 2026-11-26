@@ -3,7 +3,11 @@
 _codex_queue_state() {  # queue_dir
     local file="$1/queue.state" state
     [ -f "$file" ] && [ ! -L "$file" ] && IFS= read -r state < "$file" || return 1
-    case "$state" in armed|draining) printf '%s\n' "$state" ;; *) return 1 ;; esac
+    case "$state" in
+        armed|draining) printf '%s\n' "$state" ;;
+        waiting-background) printf 'draining\n' ;;
+        *) return 1 ;;
+    esac
 }
 
 _codex_queue_dir() {  # session metadata

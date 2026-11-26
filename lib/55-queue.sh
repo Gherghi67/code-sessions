@@ -241,6 +241,9 @@ _queue_list() {  # qdir
         printf '  %d. %s\n' "$n" "${text//$'\n'/ }"
     done
     [ "$n" -gt 0 ] || echo "Queue is empty."
+    if [ "$n" -gt 0 ] && [ "$(cat "$qdir/queue.state" 2>/dev/null)" = waiting-background ]; then
+        printf '\nWaiting for background work.\n'
+    fi
     if [ -s "$qdir/queue.done" ]; then
         done_len=$(awk 'NF{ c++ } END{ print c+0 }' "$qdir/queue.done")
         printf '\nDone (%d)\n' "$done_len"
@@ -290,7 +293,7 @@ _queue_clear() {  # qdir
 _queue_check_start() {  # qdir, engine
     local qdir="$1" engine="$2" state pid
     state=$(cat "$qdir/queue.state" 2>/dev/null | tr -d '[:space:]' || true)
-    if [ "$state" = draining ]; then
+    if [ "$state" = draining ] || [ "$state" = waiting-background ]; then
         pid=$(live_lock_pid "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}")
         if [ -n "$pid" ] && [ "$engine" = codex ]; then
             error "the queue is draining in the running session (pid $pid). Codex hands out the next task when the current one's response completes; if that turn was interrupted, the next Stop parks the queue, and cs -queue start re-arms it then. To stop the run, cs -queue clear removes the queued tasks with it."
