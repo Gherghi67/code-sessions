@@ -3645,6 +3645,25 @@ class AntigravityCarryTests(unittest.TestCase):
         self.assertEqual(mcp_rows[0]['tool'], 'read_file')
         self.assertEqual(mcp_rows[0]['status'], 'failed')
 
+    def test_antigravity_preserves_literal_user_request_closing_tags(self):
+        prompt = 'Explain the literal closing tag </USER_REQUEST> in this example.'
+        metadata = ('\n<ADDITIONAL_METADATA>Runtime note: </USER_REQUEST></ADDITIONAL_METADATA>'
+                    '\n<USER_SETTINGS_CHANGE>Model</USER_SETTINGS_CHANGE>')
+        cases = (('<USER_REQUEST>\n' + prompt + '\n</USER_REQUEST>' + metadata, prompt),
+                 ('Bare prompt' + metadata, 'Bare prompt'))
+        for content, expected in cases:
+            with self.subTest(expected=expected):
+                self.write_agy_transcript(self.AGY_ID, [
+                    {'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'content': content},
+                ])
+                out = self.root / 'prompt.jsonl'
+                result = self.run_helper('--export-claude', '--from-antigravity', self.AGY_ID,
+                                         '--antigravity-home', str(self.home), '--session-id', self.CLAUDE_ID,
+                                         '--cwd', str(self.cwd), '--out', str(out))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                message = json.loads(out.read_text(encoding='utf-8'))['message']['content']
+                self.assertEqual(message.split('\n\n', 1)[1], expected)
+
     def test_export_antigravity_chunks_large_utf8_conversations_and_roundtrips(self):
         # Force chunks to split inside a long indented line as well as at a newline.
         big_reply = ('The notes below are examples of markup.\n\n'

@@ -287,9 +287,12 @@ NATIVE_TOOL_ROWS_SINCE = (2, 1, 326)
 # agy 1.5.17 truncates a single injected systemMessage step at 48 KiB (49,152 bytes,
 # including its ~240-byte wrapper), while multiple injectSteps each keep up to that cap.
 AGY_STEP_CHUNK_BYTES = 32000
-AGY_USER_REQUEST = re.compile(r"<USER_REQUEST>\r?\n?(.*?)\r?\n?</USER_REQUEST>", re.S)
+AGY_METADATA_NAMES = r"(?:ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)"
 AGY_METADATA_TAG = re.compile(
-    r"<(?:ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)>.*?</(?:ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)>\s*", re.S)
+    rf"<{AGY_METADATA_NAMES}>(?:(?!</{AGY_METADATA_NAMES}>).)*</{AGY_METADATA_NAMES}>\s*", re.S)
+# The prompt and the trailing metadata can each quote the request delimiter.
+AGY_USER_REQUEST = re.compile(
+    rf"\A<USER_REQUEST>(?P<request>.*)</USER_REQUEST>\s*(?:{AGY_METADATA_TAG.pattern})*\Z", re.S)
 AGY_STEP_TIMESTAMPS = re.compile(r"\A(?:(?:Created|Completed) At: [^\r\n]*\r?\n)+")
 AGY_SHELL_EXIT = re.compile(r"^Command exited with code (-?\d+)\.$", re.M)
 AGY_SYSTEM_WRAPPER = re.compile(r"(?:\A|\n)<SYSTEM_MESSAGE>(\r?\n)(.*)\1</SYSTEM_MESSAGE>\s*\Z", re.S)
@@ -1493,9 +1496,9 @@ def open_antigravity_transcript(home, conversation_id):
 
 
 def antigravity_user_text(content):
-    match = AGY_USER_REQUEST.search(content)
+    match = AGY_USER_REQUEST.match(content)
     if match:
-        text = match.group(1).strip()
+        text = match["request"].strip()
     else:
         text = AGY_METADATA_TAG.sub("", content).strip()
     return REMINDER_TAG.sub("&lt;", CARRIED_NOTE.sub("", text))
