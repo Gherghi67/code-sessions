@@ -116,6 +116,11 @@ while [ $# -gt 0 ]; do
     shift
 done
 [ -n "$conversation" ] || { conversation="$AGY_NEW_ID"; new=1; }
+if [ -n "${AGY_IDLE_SIGNAL_READY:-}" ]; then
+    : > "$AGY_IDLE_SIGNAL_READY"
+    IFS= read -r _ || true
+    exit 0
+fi
 if [ -n "${AGY_WATCH_OUT:-}" ]; then
     run_dir="$CS_CACHE_DIR/antigravity-runs/$CS_RUN_ID" watcher="" tries=0
     printf '%s\n' "$run_dir" > "$AGY_WATCH_OUT.dir"
@@ -3800,6 +3805,93 @@ test_antigravity_carry_digest_does_not_depend_on_workspace_imports() {
         "carry hashes the input with workspace imports disabled"
 }
 
+_agy_signal_carry() {  # session_name, signal, stage_root
+    python3 - "$CS_BIN" "$1" "$2" "$3" "$TEST_TMPDIR" <<'PY'
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+binary, session, signal_name, stage_root, scratch = sys.argv[1:]
+stage_root = Path(stage_root)
+log = Path(scratch) / "carry-signal.log"
+idle_ready = Path(scratch) / "carry-idle"
+signum = getattr(signal, "SIG" + signal_name)
+environment = dict(os.environ, CS_ASSUME_TTY="1")
+if signum == signal.SIGTERM:
+    environment["AGY_IDLE_SIGNAL_READY"] = str(idle_ready)
+
+# A driver started by a noninteractive Bash must not pass an ignored SIGINT on.
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+with log.open("wb") as output:
+    process = subprocess.Popen([binary, session, "--engine", "antigravity"],
+                               stdin=subprocess.PIPE, stdout=output,
+                               stderr=subprocess.STDOUT, env=environment)
+    try:
+        if signum == signal.SIGTERM:
+            process.stdin.write(b"y")
+            process.stdin.flush()
+        deadline = time.monotonic() + 30
+        while process.poll() is None and time.monotonic() < deadline:
+            if signum == signal.SIGTERM:
+                ready = idle_ready.exists()
+            else:
+                ready = b"continue the Claude conversation in Antigravity" in log.read_bytes()
+            if ready:
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("carry launcher did not reach the expected prompt")
+        staged = (path for bundle in stage_root.glob(".cs-carry*")
+                  for path in (bundle.iterdir() if bundle.is_dir() else (bundle,)))
+        if not any(path.is_file() and b"COPPER-OWL" in path.read_bytes() for path in staged):
+            raise AssertionError("the fixture did not stage a conversation")
+        process.send_signal(signum)
+        status = process.wait(timeout=12)
+        if status != 128 + signum:
+            raise AssertionError("unexpected carry launcher exit status: {}".format(status))
+    except (AssertionError, subprocess.TimeoutExpired):
+        print(log.read_text(errors="replace"), file=sys.stderr)
+        raise
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+PY
+}
+
+test_antigravity_carry_sigint_removes_the_preview_only() {
+    require_tool python3 || return $?
+    local dir stage_root="$CS_CACHE_DIR/antigravity-runs"
+    "$CS_BIN" carry-interrupt --engine antigravity </dev/null || return 1
+    dir=$(_session_dir carry-interrupt)
+    _agy_write_claude_source "$dir" 33333333-3333-4333-8333-333333333336
+    printf 'another run\n' > "$stage_root/.cs-carry.other-run"
+
+    _agy_signal_carry carry-interrupt INT "$stage_root" || return 1
+    assert_file_contains "$stage_root/.cs-carry.other-run" '^another run$' "another run's preview remains" || return 1
+    assert_eq 1 "$(find "$stage_root" -name '.cs-carry*' | wc -l | tr -d ' ')" "the interrupted preview was removed"
+}
+
+test_antigravity_carry_sigterm_removes_the_staged_vault_file_only() {
+    require_tool python3 || return $?
+    local dir stage_root
+    "$CS_BIN" carry-vault-interrupt --engine antigravity </dev/null || return 1
+    dir=$(_session_dir carry-vault-interrupt)
+    _vault_session carry-vault-interrupt
+    stage_root="${VAULT_HOME%/*}"
+    mkdir -p "$dir/.cs/claude-config/projects"
+    _agy_write_claude_source "$dir" 33333333-3333-4333-8333-333333333336 "$dir/.cs/claude-config/projects"
+    printf 'another run\n' > "$stage_root/.cs-carry-44444444-4444-4444-8444-444444444444.json"
+
+    _agy_signal_carry carry-vault-interrupt TERM "$stage_root" || return 1
+    assert_file_contains "$stage_root/.cs-carry-44444444-4444-4444-8444-444444444444.json" \
+        '^another run$' "another vault carry remains" || return 1
+    assert_eq 1 "$(find "$stage_root" -name '.cs-carry*' | wc -l | tr -d ' ')" "the interrupted vault payload was removed"
+}
+
 test_antigravity_encrypted_carry_stays_inside_vault_and_verifies_digest() {
     local output dir claude_id inspect_dir new_id
     claude_id=33333333-3333-4333-8333-333333333336
@@ -4031,6 +4123,8 @@ run_test test_antigravity_carries_only_existing_codex_history_from_its_vault
 run_test test_antigravity_reopen_e_n_and_esc_do_not_carry
 run_test test_antigravity_carry_over_guards_no_turn_missing_hook_and_subagent
 run_test test_antigravity_carry_digest_does_not_depend_on_workspace_imports
+run_test test_antigravity_carry_sigint_removes_the_preview_only
+run_test test_antigravity_carry_sigterm_removes_the_staged_vault_file_only
 run_test test_antigravity_encrypted_carry_stays_inside_vault_and_verifies_digest
 run_test test_antigravity_carry_survives_a_failed_binding_write
 report_results

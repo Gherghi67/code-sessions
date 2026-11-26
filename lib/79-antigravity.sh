@@ -408,7 +408,11 @@ _antigravity_transplant_prepare() {  # session_dir
         cs_cache_dir_make_private "$stage_dir" \
             && _launch_handoff_receipt_dir_ok "$stage_dir" "$session_dir" || return 0
     fi
-    file=$(umask 077 && mktemp "$stage_dir/.cs-carry.XXXXXX") || return 0
+    # Register the empty directory before the helper writes its payload or
+    # a temporary sibling. The run's cleanup also handles INT and TERM.
+    _cs_run_carry_preview_dir=$(umask 077 && mktemp -d "$stage_dir/.cs-carry.XXXXXX") || return 0
+    _cs_run_carry_preview_id=$(cs_dir_identity "$_cs_run_carry_preview_dir") || return 0
+    file="$_cs_run_carry_preview_dir/payload.json"
     case "$from" in
         claude)
             transcript=$(_conversation_transcript "$session_dir" "$src_id") || {
@@ -468,7 +472,7 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
     local binding_file recorded reopen response="" actor run_dir=""
     local pending_handoff rotation_handoff="" rotation_origin="" prompt="" receipt_dir
     local requested="${_cs_agy_resume_id:-}"
-    local transplant_from="" transplant_id="" transplant_size="" transplant_file="" carry="" carry_vault_file=""
+    local transplant_from="" transplant_id="" transplant_size="" transplant_file="" carry=""
     local -a reopen_args=() prompt_args=()
 
     [ -d "$session_dir" ] || {
@@ -759,16 +763,17 @@ $prompt"
                     # pinned by its SHA-256 digest in the protected run dir.
                     local vault_carry="${vault_home%/*}/.cs-carry-$CS_RUN_ID.json"
                     if [ ! -e "$vault_carry" ] && [ ! -L "$vault_carry" ] \
+                        && _cs_run_carry_vault_parent_id=$(cs_dir_identity "${vault_carry%/*}") \
+                        && _cs_run_carry_vault_file="$vault_carry" \
                         && mv -f "$transplant_file" "$vault_carry" \
                         && carry_digest=$(_antigravity_carry_sha256 "$vault_carry") \
                         && [ -n "$carry_digest" ] \
                         && (umask 077; set -C; printf '%s\n' "$carry_digest" > "$run_dir/carry-digest") \
                         && (umask 077; set -C; printf '%s\n' "$transplant_from:$transplant_id" > "$run_dir/carry-source"); then
-                        carry_vault_file="$vault_carry"
                         transplant_file=""
                         carry_ok=1
                     else
-                        rm -f "$vault_carry" "$run_dir/carry-digest" "$run_dir/carry-source" 2>/dev/null || true
+                        rm -f "$run_dir/carry-digest" "$run_dir/carry-source" 2>/dev/null || true
                     fi
                 else
                     if [ ! -e "$run_dir/carry.json" ] && [ ! -L "$run_dir/carry.json" ] \
@@ -808,7 +813,6 @@ $prompt"
         if [ -n "$vault_home" ]; then
             vault_id=$(cs_dir_identity "${vault_home%/*}") &&
                 ( set -C; printf '%s\n' "$vault_home" "$vault_id" > "$run_dir/vault" ) 2>/dev/null || {
-                [ -z "$carry_vault_file" ] || rm -f "$carry_vault_file"
                 _antigravity_launch_error "Cannot record the vault Antigravity home in this run's directory; cs does not run agy on it unchecked."
                 return 1
             }
@@ -846,6 +850,7 @@ $prompt"
         fi
         warn "cs could not make a private directory under ${CS_CACHE_DIR:-$HOME/.cache/cs}/antigravity-runs: this run's conversation is recorded for a reopen only if the session has none yet."
     fi
+    [ -n "$carry" ] || _cs_run_cleanup_carry
     # A staged carry leaves the source engine current until the hook binds
     # the new conversation. Ordinary opens and carry fallbacks record agy
     # before it starts, so cs commands inside it see the running engine.
@@ -963,7 +968,6 @@ $prompt"
     # shell, so the input is flushed then, and only then: the flush would eat
     # ordinary type-ahead.
     _cs_run_end_helper
-    [ -z "$carry_vault_file" ] || rm -f "$carry_vault_file" 2>/dev/null || true
     if [ -n "$autoclear" ] && [ -e "$(_codex_keys_sent_file "$run_dir")" ]; then
         _codex_flush_input
     fi
