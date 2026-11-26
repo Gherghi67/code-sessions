@@ -3648,12 +3648,17 @@ class AntigravityCarryTests(unittest.TestCase):
         self.assertEqual(mcp_rows[0]['tool'], 'read_file')
         self.assertEqual(mcp_rows[0]['status'], 'failed')
 
-    def test_antigravity_preserves_literal_user_request_closing_tags(self):
+    def test_antigravity_parses_wrapped_and_bare_user_prompts(self):
         prompt = 'Explain the literal closing tag </USER_REQUEST> in this example.'
         metadata = ('\n<ADDITIONAL_METADATA>Runtime note: </USER_REQUEST></ADDITIONAL_METADATA>'
                     '\n<USER_SETTINGS_CHANGE>Model</USER_SETTINGS_CHANGE>')
+        mismatched = '\n<ADDITIONAL_METADATA>Quoted markup</USER_SETTINGS_CHANGE>'
+        bare = 'Bare prompt' + mismatched
+        wrapped = '<USER_REQUEST>\nWrapped prompt\n</USER_REQUEST>' + mismatched
         cases = (('<USER_REQUEST>\n' + prompt + '\n</USER_REQUEST>' + metadata, prompt),
-                 ('Bare prompt' + metadata, 'Bare prompt'))
+                 ('Bare prompt' + metadata, 'Bare prompt'),
+                 (bare + metadata, bare),
+                 (wrapped + metadata, wrapped))
         for content, expected in cases:
             with self.subTest(expected=expected):
                 self.write_agy_transcript(self.AGY_ID, [

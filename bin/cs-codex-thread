@@ -290,7 +290,8 @@ AGY_STEP_CHUNK_BYTES = 32000
 AGY_METADATA_NAMES = r"(?:ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)"
 AGY_WRAPPER_TAG = re.compile(rf"<(?=/?(?:SYSTEM_MESSAGE|USER_REQUEST|{AGY_METADATA_NAMES})>)")
 AGY_METADATA_TAG = re.compile(
-    rf"<{AGY_METADATA_NAMES}>(?:(?!</{AGY_METADATA_NAMES}>).)*</{AGY_METADATA_NAMES}>\s*", re.S)
+    rf"<(?P<metadata>{AGY_METADATA_NAMES})>(?:(?!</{AGY_METADATA_NAMES}>).)*"
+    r"</(?P=metadata)>\s*", re.S)
 # The prompt and the trailing metadata can each quote the request delimiter.
 AGY_USER_REQUEST = re.compile(
     rf"\A<USER_REQUEST>(?P<request>.*)</USER_REQUEST>\s*(?:{AGY_METADATA_TAG.pattern})*\Z", re.S)
