@@ -82,6 +82,7 @@ test_launcher_clears_inherited_profile_config_and_preserves_manager_data() {
     cat > "$HOME/.local/bin/cs" <<'EOF'
 #!/bin/sh
 printf 'claude=%s codex=%s hooks=%s profile=%s\n' "${CLAUDE_CONFIG_DIR-unset}" "${CODEX_HOME-unset}" "${CS_HOOKS_DIR-unset}" "${CODE_SESSIONS_HOME-unset}"
+printf 'selector=%s\n' "${CLAUDE_SECURESTORAGE_CONFIG_DIR-unset}"
 printf 'sessions=%s secrets=%s\n' "$CS_SESSIONS_ROOT" "$CS_SECRETS_KEYCHAIN_PREFIX"
 EOF
     chmod +x "$HOME/.local/bin/cs"
@@ -91,7 +92,17 @@ EOF
     assert_output_contains "$output" 'claude=unset codex=unset hooks=unset profile=unset' || return 1
     assert_output_contains "$output" "sessions=$LEGACY/sessions secrets=code-sessions" || return 1
     output=$(CLAUDE_CONFIG_DIR="$HOME/custom-claude" CODEX_HOME="$HOME/custom-codex" "$HOME/.local/bin/ccs") || return 1
-    assert_output_contains "$output" "claude=$HOME/custom-claude codex=$HOME/custom-codex"
+    assert_output_contains "$output" "claude=$HOME/custom-claude codex=$HOME/custom-codex" || return 1
+
+    local vault="$LEGACY/sessions/enc/.cs/claude-config" custom="$HOME/custom claude"
+    output=$(CLAUDE_CONFIG_DIR="$vault" CLAUDE_SECURESTORAGE_CONFIG_DIR="$custom" "$HOME/.local/bin/ccs") || return 1
+    assert_output_contains "$output" "claude=$custom codex=unset" "restores the shell's custom profile from inside a vault" || return 1
+    assert_output_contains "$output" "selector=$custom" "keeps the custom profile's credential selector" || return 1
+    output=$(CLAUDE_CONFIG_DIR="$vault" CLAUDE_SECURESTORAGE_CONFIG_DIR="$LEGACY/.claude" "$HOME/.local/bin/ccs") || return 1
+    assert_output_contains "$output" "claude=unset codex=unset" "does not restore the former profile from inside a vault" || return 1
+    assert_output_contains "$output" "selector=unset" "drops the former profile's credential selector" || return 1
+    output=$(CLAUDE_CONFIG_DIR="$vault" CLAUDE_SECURESTORAGE_CONFIG_DIR="" "$HOME/.local/bin/ccs") || return 1
+    assert_output_contains "$output" "claude=unset codex=unset" "uses the default profile when the vault uses the default login"
 }
 
 test_setup_from_old_session_still_installs_only_normal_integrations() {

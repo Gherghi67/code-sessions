@@ -4,8 +4,17 @@
 set -eu
 legacy="$HOME/.local/share/code-sessions/home"
 # Explicit config outside the former profile remains the user's choice.
-case "${CLAUDE_CONFIG_DIR:-}" in "$legacy"/*) unset CLAUDE_CONFIG_DIR ;; esac
 case "${CLAUDE_SECURESTORAGE_CONFIG_DIR:-}" in "$legacy"/*) unset CLAUDE_SECURESTORAGE_CONFIG_DIR ;; esac
+case "${CLAUDE_CONFIG_DIR:-}" in
+    "$legacy"/*/.cs/claude-config)
+        # A vault launch saves the shell's profile in the credential selector.
+        unset CLAUDE_CONFIG_DIR
+        if [ -n "${CLAUDE_SECURESTORAGE_CONFIG_DIR:-}" ]; then
+            export CLAUDE_CONFIG_DIR="$CLAUDE_SECURESTORAGE_CONFIG_DIR"
+        fi
+        ;;
+    "$legacy"/*) unset CLAUDE_CONFIG_DIR ;;
+esac
 case "${CODEX_HOME:-}" in "$legacy"/*) unset CODEX_HOME ;; esac
 unset CODE_SESSIONS_HOME CODE_SESSIONS_ORIGINAL_ROOT
 unset CS_SESSION_NAME CS_SESSION_DIR CS_SESSION_META_DIR CS_ACTOR
