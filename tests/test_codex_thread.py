@@ -3803,6 +3803,32 @@ class AntigravityCarryTests(unittest.TestCase):
         self.assertIn(markup.replace('<', '&lt;'), text)
         self.assertIn('`<USER_REQUEST_EXAMPLE>`', text)
 
+    def test_export_antigravity_validates_history_source_and_preserves_filename_labels(self):
+        path = self.root / 'meeting [notes].jsonl'
+        path.write_text(claude_record('user', 'Please summarize the notes.', 'u1', None) + '\n',
+                        encoding='utf-8')
+        cases = (('invalid', ('--history-source', 'not-a-uuid'), None, None),
+                 ('uuid', ('--history-source', self.CLAUDE_ID), self.CLAUDE_ID, self.CLAUDE_ID),
+                 ('filename', (), path.stem, 'meeting [notes&#93;'))
+        for case, supplied, source_id, label in cases:
+            with self.subTest(case=case):
+                out = self.root / (case + '.json')
+                result = self.run_helper('--export-antigravity', '--history-from-claude', str(path),
+                                         '--out', str(out), *supplied)
+                if source_id is None:
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn('--history-source must be an exact Claude UUID', result.stderr)
+                    self.assertFalse(out.exists())
+                    continue
+                self.assertEqual(result.returncode, 0, result.stderr)
+                payload = json.loads(out.read_text(encoding='utf-8'))
+                self.assertEqual(payload['source'], 'claude:' + source_id)
+                text = payload['steps'][0]['systemMessage']['systemMessage']
+                note = text.split('\n\n', 1)[0]
+                self.assertIn('Claude conversation ' + label + '.', note)
+                self.assertEqual(note.count(']'), 1)
+                self.assertIn('Please summarize the notes.', text)
+
     def test_read_antigravity_refuses_symlinks_hardlinks_and_missing_history(self):
         missing = self.run_helper('--read-antigravity', self.AGY_ID, '--antigravity-home', str(self.home))
         self.assertEqual(missing.returncode, 1)

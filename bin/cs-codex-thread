@@ -391,6 +391,8 @@ def history_stats(messages):
 def carried_note(engine, native_id, limit, target=None):
     source = ENGINE_NAMES.get(engine, engine)
     kind = "thread" if engine == "codex" else "conversation"
+    # CARRIED_NOTE ends at "]", which a transcript basename may contain.
+    label = native_id.replace("]", "&#93;")
     if engine == "codex":
         hidden = "Codex's reasoning is"
     elif engine == "antigravity":
@@ -400,12 +402,12 @@ def carried_note(engine, native_id, limit, target=None):
     if target is None:
         target = "claude" if engine == "codex" else "codex"
     # Codex's and Antigravity's models read every carried call as text; Claude's
-    # reads a call cs can show with its result as a tool call. No "]": CARRIED_NOTE ends at one.
+    # reads a call cs can show with its result as a tool call.
     calls = ("A tool call appears as a tool call where Claude can show it with its result, and as text otherwise"
              if target == "claude" else "Tool calls and their results appear as text")
     return ("[cs carried this conversation over from {} {} {}. {}, each result cut to its first {:,} characters; "
             "{} not included. Those tools were {}'s: use your own from here on.]").format(
-                source, kind, native_id, calls, limit, hidden, source)
+                source, kind, label, calls, limit, hidden, source)
 
 
 def write_private(path, text):
@@ -2569,7 +2571,7 @@ def main():
                         help="carry an Antigravity conversation into the new Codex thread, after the instructions")
     parser.add_argument("--antigravity-home", metavar="DIR",
                         help="home directory holding .gemini/antigravity-cli/brain (defaults to $HOME)")
-    parser.add_argument("--history-source", help="the Claude conversation ID the carried note names")
+    parser.add_argument("--history-source", help="the Claude conversation UUID the carried note names")
     parser.add_argument("--session-id")
     parser.add_argument("--out")
     parser.add_argument("--claude-version")
@@ -2584,6 +2586,8 @@ def main():
         parser.error("--clip must be a positive number of characters")
     if args.thread_id is not None and not THREAD_ID.fullmatch(args.thread_id):
         parser.error("--thread-id must be an exact Codex UUID")
+    if args.history_source is not None and not THREAD_ID.fullmatch(args.history_source):
+        parser.error("--history-source must be an exact Claude UUID")
     for flag, value in (("--from-antigravity", args.from_antigravity),
                         ("--read-antigravity", args.read_antigravity),
                         ("--history-from-antigravity", args.history_from_antigravity)):
