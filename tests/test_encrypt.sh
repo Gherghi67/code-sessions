@@ -1937,6 +1937,23 @@ test_encrypt_moves_nothing_from_a_folder_it_cannot_read() {
     [ -L "$s/memory" ] || { echo "  FAIL: the session was not linked into the vault"; return 1; }
 }
 
+test_open_leaves_unreadable_plaintext_conversations_and_starts_claude() {
+    [ "$(id -u)" != "0" ] || { echo "  SKIP: root reads a file whatever its mode"; return 77; }
+    _encrypted_session enc || return 1
+    local id=44444444-4444-4444-8444-444444444444 proj out rc=0
+    proj=$(_plain_conversation enc "$id" "before the vault")
+    chmod 000 "$proj/$id.jsonl"
+    out=$(CLAUDE_CODE_BIN="$(_claude_snapshot)" _open enc "${VAULT_PW_LINE}n
+" 2>&1) || rc=$?
+    chmod 600 "$proj/$id.jsonl"
+    assert_eq "0" "$rc" "Claude can start: $out" || return 1
+    assert_file_exists "$TEST_TMPDIR/during" "Claude ran with the vault attached" || return 1
+    assert_output_contains "$out" "cannot read $proj/$id.jsonl" "names the unreadable transcript" || return 1
+    assert_output_contains "$out" "plain text" "explains where the transcripts remain" || return 1
+    assert_file_contains "$proj/$id.jsonl" "before the vault" "the plaintext original stays whole" || return 1
+    assert_not_exists "$(_vault_projects enc)/$id.jsonl" "no empty transcript is written into the vault"
+}
+
 # A folder cs can list but not enter cannot be copied, though find walks past
 # it without a word. The move starts only when cs can enter every folder too.
 test_open_moves_nothing_from_a_folder_it_cannot_enter() {
@@ -2296,6 +2313,7 @@ run_test test_open_moves_nothing_while_a_claude_that_changed_folder_writes
 run_test test_open_moves_nothing_from_a_folder_a_path_of_another_case_shares
 run_test test_open_moves_nothing_from_a_folder_it_cannot_read
 run_test test_encrypt_moves_nothing_from_a_folder_it_cannot_read
+run_test test_open_leaves_unreadable_plaintext_conversations_and_starts_claude
 run_test test_open_moves_nothing_from_a_folder_it_cannot_enter
 run_test test_open_claims_no_whole_copy_of_a_folder_it_cannot_enter
 run_test test_open_finishes_a_removal_that_stopped_inside_a_folder

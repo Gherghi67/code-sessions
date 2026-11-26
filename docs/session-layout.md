@@ -358,7 +358,9 @@ on the volume, `claude-config/projects.cs-moving.<pid>`, renames each into the
 session's folder once the last copy ends, and only then removes what is outside. If
 the copy stops, as on a full disk, cs removes the staging folder, the
 conversations outside are whole, the vault holds none of them cut short, and cs
-stops and says so. If the removal stops, the vault holds whole copies: cs names
+stops and says so. On reopen, an unreadable source file is named and Claude
+starts. The conversations outside remain in plain text until a later open
+can copy them. If the removal stops, the vault holds whole copies: cs names
 the folder whose contents are still in plain text and goes on. The next open
 finishes that removal. An entry outside is no clash when the volume's entry of
 that name holds everything in it: the same file, or a folder whose every entry the

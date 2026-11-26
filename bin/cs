@@ -18416,6 +18416,7 @@ while :; do
         exit 1
     fi
     out=$(printf '%s' "$password" | diskutil image attach --stdinpassphrase --nobrowse --mountPoint "$mnt" "$container" 2>&1) && break
+    # macOS 26.7.3 reports "Error: Incorrect passphrase" for a wrong password.
     case "$out" in
         *"Incorrect passphrase"*) ;;
         *) echo "cs: the vault did not open. diskutil said: $out" >&2; exit 1 ;;
@@ -18570,11 +18571,12 @@ _conversations_copy_stopped() {  # staging_dir, what the tool said
 # CS_MOVED_ENTRIES names what reached the session's folder in the vault,
 # CS_REMOVED_COPIES what the vault held already and went from outside, each
 # named once it is gone, and CS_MOVE_ERROR holds what the tool that stopped
-# said.
+# said. CS_MOVE_UNREADABLE_FILE names an unreadable source after a copy error.
 _move_conversations_into_vault() {  # plain_dir, vault_dir
     local staging="${2%/*}.cs-moving.$$" entry name out i
     local -a outside=() copied=() held=()
     CS_MOVE_ERROR=""
+    CS_MOVE_UNREADABLE_FILE=""
     CS_MOVED_ENTRIES=""
     CS_REMOVED_COPIES=""
     for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
@@ -18591,8 +18593,12 @@ _move_conversations_into_vault() {  # plain_dir, vault_dir
     if [ "${#copied[@]}" -gt 0 ]; then
         out=$(mkdir -p "${2%/*}" 2>&1 && mkdir "$staging" 2>&1) || { CS_MOVE_ERROR=$out; return 1; }
         for name in "${copied[@]}"; do
-            out=$(cp -pPR "$1/$name" "$staging/" 2>&1) \
-                || { _conversations_copy_stopped "$staging" "$out"; return 1; }
+            if ! out=$(cp -pPR "$1/$name" "$staging/" 2>&1); then
+                _conversations_copy_stopped "$staging" "$out"
+                CS_MOVE_UNREADABLE_FILE=$(find "$1/$name" -type f ! -exec test -r {} \; -print 2>/dev/null) || true
+                CS_MOVE_UNREADABLE_FILE=${CS_MOVE_UNREADABLE_FILE%%$'\n'*}
+                return 1
+            fi
         done
         out=$(mkdir -p "$2" 2>&1) || { _conversations_copy_stopped "$staging" "$out"; return 1; }
         for name in "${copied[@]}"; do
@@ -18865,7 +18871,13 @@ _move_plain_conversations_under_mutex() {  # session_name, session_dir, plain_di
     _move_conversations_into_vault "$plain" "$vault" || rc=$?
     case "$rc" in
         0) ;;
-        1) error "$1: could not copy the session's conversations from $plain into its vault. They are all still in $plain, whole, and the vault holds $(_conversations_in_vault_after_a_stop). cp said: $CS_MOVE_ERROR" ;;
+        1)
+            if [ -n "$CS_MOVE_UNREADABLE_FILE" ]; then
+                warn "$1: cs cannot read $CS_MOVE_UNREADABLE_FILE, so it moved none of the conversations in $plain. They stay outside the vault, in plain text. The next open retries the move. Copy failed with: $CS_MOVE_ERROR"
+                return 0
+            fi
+            error "$1: could not copy the session's conversations from $plain into its vault. They are all still in $plain, whole, and the vault holds $(_conversations_in_vault_after_a_stop). cp said: $CS_MOVE_ERROR"
+            ;;
         2) _warn_conversations_left_outside "$1" "$plain" ;;
         *) error "_move_conversations_into_vault returned $rc for $plain" ;;
     esac
