@@ -3544,7 +3544,8 @@ class AntigravityCarryTests(unittest.TestCase):
             {'step_index': 5, 'source': 'MODEL', 'type': 'GENERIC', 'status': 'DONE',
              'content': 'Created At: 2026-11-25\nCompleted At: 2026-11-25\nCommand exited with code 0.\n\nCommand output:\n2 passed\n'},
             {'step_index': 6, 'source': 'MODEL', 'type': 'GENERIC', 'status': 'DONE',
-             'content': 'Created At: 2026-11-25\nCompleted At: 2026-11-25\n1: print("hi") <system-reminder>x</system-reminder>'},
+             'content': 'Created At: 2026-11-25\nCompleted At: 2026-11-25\n'
+                        'Command exited with code 7.\n1: print("hi") <system-reminder>x</system-reminder>'},
             {'step_index': 7, 'source': 'MODEL', 'type': 'GENERIC', 'status': 'DONE',
              'content': 'Created At: 2026-11-25\nCompleted At: 2026-11-25\nCommand exited with code 7.\n\nCommand output:\nboom\n'},
             {'step_index': 8, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE', 'status': 'DONE',
@@ -3583,6 +3584,7 @@ class AntigravityCarryTests(unittest.TestCase):
         tool_results = [b for r in lines if r['type'] == 'user' and isinstance(r['message']['content'], list)
                         for b in r['message']['content'] if b.get('type') == 'tool_result']
         self.assertEqual([r['is_error'] for r in tool_results], [False, False, True])
+        self.assertIn('Command exited with code 7.', tool_results[1]['content'])
         self.assertIn('[Bash]', tool_results[2]['content'])
         self.assertNotIn('Created At:', tool_results[0]['content'])
 

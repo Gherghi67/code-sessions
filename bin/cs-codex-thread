@@ -1625,11 +1625,11 @@ def read_antigravity(home, conversation_id, limit):
                             "namespace": "antigravity", "cwd": None})
             elif kind == "GENERIC" and source == "MODEL":
                 finish_input()
-                call_id, _ = pending_calls.pop(0) if pending_calls else (None, None)
+                call_id, name = pending_calls.pop(0) if pending_calls else (None, None)
                 raw_content = content if isinstance(content, str) else ""
                 cleaned = AGY_STEP_TIMESTAMPS.sub("", raw_content)
-                header = cleaned.partition("\nCommand output:\n")[0]
-                exit_match = AGY_SHELL_EXIT.search(header)
+                exit_match = (AGY_SHELL_EXIT.search(cleaned.partition("\nCommand output:\n")[0])
+                              if name == "run_command" else None)
                 exit_code = int(exit_match.group(1)) if exit_match else None
                 shell_failed = exit_code is not None and exit_code != 0
                 error_text = record.get("error").strip() if isinstance(record.get("error"), str) else ""
