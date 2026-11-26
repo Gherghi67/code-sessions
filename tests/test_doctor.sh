@@ -2798,7 +2798,7 @@ if [ -n "${CS_TEST_DOCTOR_MOUNT:-}" ]; then
 fi
 EOF
     chmod +x "$tools/mount"
-    output=$(cd "$CLAUDE_SESSION_DIR" && PATH="$tools:$PATH" CS_TEST_DOCTOR_MOUNT= "$CS_BIN" -doctor 2>&1) || true
+    output=$(cd "$CLAUDE_SESSION_DIR" && PATH="$tools:$PATH" CS_TEST_DOCTOR_MOUNT='' "$CS_BIN" -doctor 2>&1) || true
     assert_output_not_contains "$output" "Vault transcript staging:" "an unmounted vault is not inspected" || return 1
 
     mounted=$(cd "$mnt" && pwd -P) || return 1
