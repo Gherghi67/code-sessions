@@ -3744,6 +3744,38 @@ class AntigravityCarryTests(unittest.TestCase):
         self.assertEqual(rows[4]['content'], [{'type': 'text', 'text': 'The next reply comes from Antigravity.'}])
         self.assertEqual(rt_text.count('[cs carried this conversation over from '), 1)
 
+    def test_antigravity_utf8_split_encodes_once_and_preserves_breaks(self):
+        split = runpy.run_path(str(HELPER), run_name='cs_test_helper')['split_utf8_text']
+        encoded_lengths = []
+
+        class MeasuredText(str):
+            def __getitem__(self, key):
+                value = super().__getitem__(key)
+                return type(self)(value) if isinstance(key, slice) else value
+
+            def encode(self, *args, **kwargs):
+                encoded_lengths.append(len(self))
+                return super().encode(*args, **kwargs)
+
+        cases = (('abcdefgh\n\nijk\nmnop', 16, ['abcdefgh\n\n', 'ijk\nmnop']),
+                 ('abcdefghij\nklmnopqrstuv', 16, ['abcdefghij\n', 'klmnopqrstuv']),
+                 ('abcdefgh🚀ijklmnop', 10, ['abcdefgh', '🚀ijklmn', 'op']),
+                 ('短い', 10, ['短い']),
+                 ('', 10, ['']))
+        for original, budget, expected in cases:
+            with self.subTest(original=original):
+                encoded_lengths.clear()
+                chunks = split(MeasuredText(original), budget)
+                self.assertEqual(encoded_lengths, [len(original)])
+                self.assertEqual(chunks, expected)
+                self.assertEqual(''.join(chunks), original)
+                self.assertTrue(all(len(chunk.encode('utf-8')) <= budget for chunk in chunks))
+
+        with self.assertRaises(ValueError):
+            split('abc', 0)
+        with self.assertRaises(ValueError):
+            split('🚀', 3)
+
     def test_antigravity_recovers_legacy_carried_chunks_before_the_native_prompt(self):
         records = [{'type': 'USER_INPUT', 'source': 'USER_EXPLICIT',
                     'content': '<USER_REQUEST>\nNew question\n</USER_REQUEST>'}]

@@ -1651,33 +1651,31 @@ def read_antigravity(home, conversation_id, limit):
 
 def split_utf8_text(text, max_bytes):
     """Split text into chunks each at most max_bytes UTF-8 bytes, preferring paragraph and line breaks."""
-    if len(text.encode("utf-8")) <= max_bytes:
+    if max_bytes < 1:
+        raise ValueError("UTF-8 chunk budget must be positive")
+    data = text.encode("utf-8")
+    if len(data) <= max_bytes:
         return [text]
-    chunks, rest = [], text
-    while rest:
-        if len(rest.encode("utf-8")) <= max_bytes:
-            chunks.append(rest)
-            break
-        # Find the longest prefix within max_bytes UTF-8 bytes.
-        lo, hi = 1, len(rest)
-        while lo < hi:
-            mid = (lo + hi + 1) // 2
-            if len(rest[:mid].encode("utf-8")) <= max_bytes:
-                lo = mid
-            else:
-                hi = mid - 1
-        cut = lo
-        # Prefer a paragraph or line boundary in the second half of the chunk.
-        floor = max(1, cut // 2)
-        para = rest.rfind("\n\n", floor, cut)
-        if para >= floor:
-            cut = para + 2
+    chunks, start = [], 0
+    while start + max_bytes < len(data):
+        end = start + max_bytes
+        # If the next byte would continue a code point, cut before its start.
+        while (data[end] & 0xC0) == 0x80:
+            end -= 1
+        if end == start:
+            raise ValueError("UTF-8 chunk budget cannot fit a code point")
+        # Limit both searches to the latter half of this byte window.
+        floor = start + max(1, (end - start) // 2)
+        paragraph = data.rfind(b"\n\n", floor, end)
+        if paragraph >= 0:
+            end = paragraph + 2
         else:
-            nl = rest.rfind("\n", floor, cut)
-            if nl >= floor:
-                cut = nl + 1
-        chunks.append(rest[:cut])
-        rest = rest[cut:]
+            newline = data.rfind(b"\n", floor, end)
+            if newline >= 0:
+                end = newline + 1
+        chunks.append(data[start:end].decode("utf-8"))
+        start = end
+    chunks.append(data[start:].decode("utf-8"))
     return chunks
 
 

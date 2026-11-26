@@ -2117,7 +2117,7 @@ CS_KNOWN_SHA256=(
 CS_PAYLOAD_SHA256=(
     "d05900a2309d1f98ef038cb8ac61d65a82ae2163e73ad6d1e99e64cf56ce86e8  bin/cs"
     "daa73d86fbf428a84f5ef4c1f8fa355d6295c056dbc690eb2e433a8ff03f8437  bin/cs-secrets"
-    "46e23a70644ed6092b554182ad433e6b500d6c9b9c290792c6df66cce7866b76  bin/cs-codex-thread"
+    "01d3b8a95bb19f7414ffc7e9870f34df996d0da23210e53e603c8bec49a61983  bin/cs-codex-thread"
     "92fbf3b94c270ac607ea8796e826b95d7a062b25cbced9bf1004ff9516224775  bin/cs-statusline"
     "5f8a8f43eabd2c51c81e4b2c53728205231f02fe039fd62463cc6855356e461e  bin/cs-subagent-statusline"
     "b1272ea923569f2c56fcac2900bdb8b52d98a7fe400031fe92ad067ed62aa65d  bin/cs-statusline-agy"
