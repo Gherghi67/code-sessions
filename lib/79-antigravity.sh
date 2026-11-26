@@ -380,6 +380,92 @@ _antigravity_statusline_settings() {
         '{statusLine: {command: $command, stack_with_default: true}}'
 }
 
+_antigravity_carry_sha256() {  # file
+    # The launcher runs this from the workspace. Isolate Python's import path.
+    python3 -I -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1" 2>/dev/null
+}
+
+# Offered when the session's newer conversation is Claude's or Codex's
+# (lib/47-transplant.sh). The conversation is converted before the question, so
+# an empty or unreadable one is never offered: the latter is named in one dim
+# line and the usual question follows. Sets the caller's transplant_from,
+# transplant_id, transplant_size and transplant_file (the injectSteps JSON
+# staged outside the session, or inside .cs/private for an encrypted session).
+_antigravity_transplant_prepare() {  # session_dir
+    local session_dir="$1" source from src_id helper stage_dir file transcript stats codex_home=""
+    source=$(_transplant_source "$session_dir" antigravity) || return 0
+    from=${source%% *}
+    src_id=${source#* }
+    helper=$(_codex_thread_helper 2>/dev/null) && [ -x "$helper" ] || return 0
+    if ! _antigravity_rotation_hook_ready SessionStart session-start "$CS_BIN" \
+        || ! _antigravity_rotation_hook_ready PreInvocation pre-invocation "$CS_BIN"; then
+        _transplant_unreadable "$from" "the cs Antigravity hook is missing or disabled"
+        return 0
+    fi
+    if _switch_session_encrypted "$session_dir"; then
+        stage_dir=$(cd -P -- "$session_dir/.cs/private" 2>/dev/null && pwd -P) || return 0
+    else
+        stage_dir="${CS_CACHE_DIR:-$HOME/.cache/cs}/antigravity-runs"
+        cs_cache_dir_make_private "$stage_dir" \
+            && _launch_handoff_receipt_dir_ok "$stage_dir" "$session_dir" || return 0
+    fi
+    # Register the empty directory before the helper writes its payload or
+    # a temporary sibling. The run's cleanup also handles INT and TERM.
+    _cs_run_carry_preview_dir=$(umask 077 && mktemp -d "$stage_dir/.cs-carry.XXXXXX") || return 0
+    _cs_run_carry_preview_id=$(cs_dir_identity "$_cs_run_carry_preview_dir") || return 0
+    file="$_cs_run_carry_preview_dir/payload.json"
+    case "$from" in
+        claude)
+            transcript=$(_conversation_transcript "$session_dir" "$src_id") || {
+                rm -f "$file"
+                return 0
+            }
+            if ! stats=$("$helper" --export-antigravity --history-from-claude "$transcript" \
+                --history-source "$src_id" --out "$file" 2>&1); then
+                rm -f "$file"
+                _transplant_unreadable claude "$stats"
+                return 0
+            fi
+            ;;
+        codex)
+            # A preview only reads the vault's existing history. Setting up
+            # a launch home here would touch config and the active run lease.
+            if _switch_session_encrypted "$session_dir"; then
+                if ! codex_home=$(_codex_vault_home_path "$session_dir") \
+                    || [ ! -d "$codex_home" ] || [ -L "$codex_home" ] \
+                    || [ -L "$codex_home/sessions" ] || [ -L "$codex_home/archived_sessions" ]; then
+                    rm -f "$file"
+                    _transplant_unreadable codex "the vault Codex history is unavailable"
+                    return 0
+                fi
+            fi
+            if ! stats=$(
+                if [ -n "$codex_home" ]; then
+                    export CODEX_HOME="$codex_home"
+                else
+                    _codex_drop_inherited_vault_home
+                fi
+                "$helper" --export-antigravity --thread-id "$src_id" --out "$file" 2>&1 ); then
+                rm -f "$file"
+                _transplant_unreadable codex "$stats"
+                return 0
+            fi
+            ;;
+        *)
+            rm -f "$file"
+            return 0
+            ;;
+    esac
+    if [ "$(_transplant_count "$stats")" -lt 1 ] || [ ! -f "$file" ] || [ -L "$file" ]; then
+        rm -f "$file"
+        return 0
+    fi
+    transplant_from=$from
+    transplant_id=$src_id
+    transplant_size=$(_transplant_size "$stats")
+    transplant_file=$file
+}
+
 _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge, intent, remote_mode
     local session_name="$1" session_dir="$2" merge_feature="${5:-}" intent="${6:-auto}"
     local finish_dir="" merge_kick=""
@@ -387,6 +473,7 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
     local binding_file recorded reopen response="" actor run_dir=""
     local pending_handoff rotation_handoff="" rotation_origin="" prompt="" receipt_dir
     local requested="${_cs_agy_resume_id:-}"
+    local transplant_from="" transplant_id="" transplant_size="" transplant_file="" carry=""
     local -a reopen_args=() prompt_args=()
 
     [ -d "$session_dir" ] || {
@@ -488,9 +575,22 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
         auto)
             # Nobody sits at the spawn's own window to answer: its open
             # continues the conversation, as Enter would, with the kickoff.
-            if { [ -n "$recorded" ] || [ -n "$pending_handoff" ]; } && cs_interactive \
+            # An explicit -finish has its own kickoff instead of an idle carry.
+            if [ -z "$merge_feature" ] && cs_interactive && ! _spawn_seed_is_owned "$session_name"; then
+                _antigravity_transplant_prepare "$session_dir"
+            fi
+            if { [ -n "$recorded" ] || [ -n "$pending_handoff" ] || [ -n "$transplant_from" ]; } && cs_interactive \
                 && ! _spawn_seed_is_owned "$session_name"; then
-                if [ -n "$pending_handoff" ]; then
+                if [ -n "$transplant_from" ]; then
+                    if [ -n "$pending_handoff" ]; then
+                        local t_origin=""
+                        _handoff_is_local "$pending_handoff" "$session_dir" \
+                            || t_origin=" ${DIM}(from another checkout)${NC}"
+                        printf '%bRotation handoff pending:%b %s%b\n' "$DIM" "$NC" "${pending_handoff##*/}" "$t_origin"
+                    fi
+                    _transplant_offer_print "$transplant_from" "$transplant_id" antigravity "$transplant_size" \
+                        "$recorded" "$pending_handoff" y
+                elif [ -n "$pending_handoff" ]; then
                     local origin=""
                     _handoff_is_local "$pending_handoff" "$session_dir" || origin=" (from another checkout)"
                     printf 'Rotation handoff pending: %s%s\n' "${pending_handoff##*/}" "$origin"
@@ -498,10 +598,10 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
                 else
                     printf 'Continue previous Antigravity conversation? [Y/n] '
                 fi
-                IFS= read -rsn1 response || { printf '\n'; return 130; }
+                IFS= read -rsn1 response || { printf '\n'; [ -z "$transplant_file" ] || rm -f "$transplant_file"; return 130; }
                 printf '\n'
                 case "$response" in
-                    $'\e') return 130 ;;
+                    $'\e') [ -z "$transplant_file" ] || rm -f "$transplant_file"; return 130 ;;
                     [nN]) reopen=""; _disarm_rotation_marker "$session_dir" "$pending_handoff" ;;
                     [rR])
                         if [ -n "$pending_handoff" ]; then
@@ -509,16 +609,35 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
                             reopen=""
                         else
                             _disarm_rotation_marker "$session_dir"
+                            [ -z "$transplant_from" ] || carry=1
                         fi
                         ;;
                     [dD])
                         _disarm_rotation_marker "$session_dir"
-                        [ -z "$pending_handoff" ] || _handoff_set_status "$pending_handoff" discarded || return 1
+                        [ -z "$pending_handoff" ] || _handoff_set_status "$pending_handoff" discarded || {
+                            [ -z "$transplant_file" ] || rm -f "$transplant_file"
+                            return 1
+                        }
+                        [ -z "$transplant_from" ] || carry=1
                         ;;
-                    *) _disarm_rotation_marker "$session_dir" "$pending_handoff" ;;
+                    [eE])
+                        _disarm_rotation_marker "$session_dir" "$pending_handoff"
+                        [ -z "$transplant_from" ] || [ -n "$recorded" ] || carry=1
+                        ;;
+                    *)
+                        _disarm_rotation_marker "$session_dir" "$pending_handoff"
+                        [ -z "$transplant_from" ] || carry=1
+                        ;;
                 esac
+                if [ -n "$carry" ]; then
+                    reopen=""
+                elif [ -n "$transplant_file" ]; then
+                    rm -f "$transplant_file"
+                    transplant_file=""
+                fi
             else
                 _disarm_rotation_marker "$session_dir" "$pending_handoff"
+                [ -z "$transplant_file" ] || { rm -f "$transplant_file"; transplant_file=""; }
             fi
             ;;
         fresh) reopen=""; _disarm_rotation_marker "$session_dir" "$pending_handoff" ;;
@@ -560,9 +679,10 @@ $prompt"
         *) reopen_args=(--conversation "$reopen") ;;
     esac
     local -a CS_NATIVE_LAUNCH_ARGS
-    _cs_native_launch_options antigravity || return 1
+    _cs_native_launch_options antigravity || { [ -z "$transplant_file" ] || rm -f "$transplant_file"; return 1; }
     _antigravity_flags_listed "$agy_bin" ${reopen_args[@]+"${reopen_args[@]}"} \
-        ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} ${rotation_handoff:+--prompt-interactive} || return 1
+        ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} ${rotation_handoff:+--prompt-interactive} \
+        || { [ -z "$transplant_file" ] || rm -f "$transplant_file"; return 1; }
     # cs's status line, for this run only. An agy without --settings, or any
     # reason _antigravity_statusline_state gives, starts with agy's own line;
     # cs -doctor says which.
@@ -575,36 +695,39 @@ $prompt"
     fi
 
     if _switch_session_encrypted "$session_dir"; then
-        vault_home=$(_antigravity_vault_home_prepare "$session_dir" "$shared_home") || return 1
+        vault_home=$(_antigravity_vault_home_prepare "$session_dir" "$shared_home") || {
+            [ -z "$transplant_file" ] || rm -f "$transplant_file"
+            return 1
+        }
         rule_shown=".cs/private/antigravity-home/.gemini/GEMINI.md, in the vault"
     fi
 
-    cd -- "$session_dir" || return 1
+    cd -- "$session_dir" || { [ -z "$transplant_file" ] || rm -f "$transplant_file"; return 1; }
     cs_unset_claude_env
-    actor=$(cs_actor_slug "$session_dir") || return 1
+    actor=$(cs_actor_slug "$session_dir") || { [ -z "$transplant_file" ] || rm -f "$transplant_file"; return 1; }
     if [ -n "$vault_home" ]; then
         # An encrypted session's context goes into the vault home as agy's
         # global rule. A workspace rule of cs's that a run before the
         # encryption left is that context in plaintext, and goes.
         _antigravity_drop_workspace_rule "$session_dir" || {
+            [ -z "$transplant_file" ] || rm -f "$transplant_file"
             _antigravity_launch_error "Could not safely remove plaintext Antigravity context from .agents/rules. Check for linked or inaccessible paths there, then reopen."
             return 1
         }
-        _antigravity_write_vault_rule "$session_name" "$session_dir" "$actor" "$CS_BIN" "$vault_home" "$shared_home" || return 1
+        _antigravity_write_vault_rule "$session_name" "$session_dir" "$actor" "$CS_BIN" "$vault_home" "$shared_home" || {
+            [ -z "$transplant_file" ] || rm -f "$transplant_file"
+            return 1
+        }
     else
         # The rule first: a launch refused over a rule of the user's adds no
         # exclude entry, which would have git ignore their file on cs's say-so.
-        _antigravity_write_rule "$session_name" "$session_dir" "$actor" "$CS_BIN" || return 1
+        _antigravity_write_rule "$session_name" "$session_dir" "$actor" "$CS_BIN" || {
+            [ -z "$transplant_file" ] || rm -f "$transplant_file"
+            return 1
+        }
         _antigravity_exclude_rule "$session_dir" \
             || warn "could not add $CS_ANTIGRAVITY_RULE to the checkout's info/exclude; git status will list it"
     fi
-    # Recorded before agy starts, as Codex does, so cs commands run inside it
-    # (cs -doctor, the picker) see the engine the session now runs under.
-    cs_run_with_lease "$meta_dir" _cs_set_local_state_unlocked "$meta_dir/local/state" engine antigravity || {
-        _antigravity_launch_error "Could not record the session's engine in $meta_dir/local/state"
-        return 1
-    }
-
     # The binding comes from cs's hook, not from here: a run that ends before
     # its conversation reaches the model leaves the binding as it was, so the
     # next open never continues a conversation of another folder. A plugin
@@ -626,12 +749,58 @@ $prompt"
     # The hook remembers in this run's own directory, out of the session the
     # agent can write, which conversation the run works in; the run's cleanup
     # removes it.
-    local protected="$vault_home$requested"
+    local protected="$vault_home$requested$carry"
     if run_dir=$(_antigravity_run_dir_prepare "${protected:+protected}" "$session_dir"); then
         _cs_run_helper_dir=$run_dir
         if [ -n "$requested" ] && ! (umask 077; set -C; printf '%s\n' "$requested" > "$run_dir/resume-conversation"); then
+            [ -z "$transplant_file" ] || rm -f "$transplant_file"
             _antigravity_launch_error "Could not record the selected Antigravity conversation."
             return 1
+        fi
+        if [ -n "$carry" ]; then
+            local carry_ok="" carry_digest=""
+            if [ -n "$hooked" ] && [ -f "$transplant_file" ] && [ ! -L "$transplant_file" ]; then
+                if [ -n "$vault_home" ]; then
+                    # Encrypted session: keep carry plaintext inside the vault,
+                    # pinned by its SHA-256 digest in the protected run dir.
+                    local vault_carry="${vault_home%/*}/.cs-carry-$CS_RUN_ID.json"
+                    if [ ! -e "$vault_carry" ] && [ ! -L "$vault_carry" ] \
+                        && _cs_run_carry_vault_parent_id=$(cs_dir_identity "${vault_carry%/*}") \
+                        && _cs_run_carry_vault_file="$vault_carry" \
+                        && mv -f "$transplant_file" "$vault_carry" \
+                        && carry_digest=$(_antigravity_carry_sha256 "$vault_carry") \
+                        && [ -n "$carry_digest" ] \
+                        && (umask 077; set -C; printf '%s\n' "$carry_digest" > "$run_dir/carry-digest") \
+                        && (umask 077; set -C; printf '%s\n' "$transplant_from:$transplant_id" > "$run_dir/carry-source"); then
+                        transplant_file=""
+                        carry_ok=1
+                    else
+                        rm -f "$run_dir/carry-digest" "$run_dir/carry-source" 2>/dev/null || true
+                    fi
+                else
+                    if [ ! -e "$run_dir/carry.json" ] && [ ! -L "$run_dir/carry.json" ] \
+                        && mv -f "$transplant_file" "$run_dir/carry.json" \
+                        && (umask 077; set -C; printf '%s\n' "$transplant_from:$transplant_id" > "$run_dir/carry-source"); then
+                        transplant_file=""
+                        carry_ok=1
+                    else
+                        rm -f "$run_dir/carry.json" "$run_dir/carry-source" 2>/dev/null || true
+                    fi
+                fi
+            fi
+            if [ -z "$carry_ok" ]; then
+                [ -z "$transplant_file" ] || { rm -f "$transplant_file"; transplant_file=""; }
+                local _t_label
+                _t_label=$(_transplant_label "$transplant_from")
+                carry=""
+                if [ -n "$recorded" ] && _antigravity_flags_listed "$agy_bin" --conversation 2>/dev/null; then
+                    printf 'cs: could not carry the %s conversation over; resuming the earlier Antigravity conversation.\n' "$_t_label" >&2
+                    reopen="$recorded"
+                    reopen_args=(--conversation "$reopen")
+                else
+                    printf 'cs: could not carry the %s conversation over; starting a fresh Antigravity conversation.\n' "$_t_label" >&2
+                fi
+            fi
         fi
         if [ -n "$reopen" ]; then
             printf 'resume\n' > "$run_dir/opened" || true
@@ -656,6 +825,7 @@ $prompt"
             _antigravity_run_mark "$run_dir/clear-rebind"
         fi
     else
+        [ -z "$transplant_file" ] || { rm -f "$transplant_file"; transplant_file=""; }
         if [ -n "$requested" ]; then
             _antigravity_launch_error "Cannot prepare a private Antigravity run directory for --resume-conversation."
             return 1
@@ -668,7 +838,27 @@ $prompt"
             _antigravity_launch_error "Cannot prepare a private Antigravity run directory under ${CS_CACHE_DIR:-$HOME/.cache/cs}/antigravity-runs; an encrypted session's hooks check its vault home from there, so cs does not start agy without it."
             return 1
         fi
+        if [ -n "$carry" ]; then
+            local _t_label
+            _t_label=$(_transplant_label "$transplant_from")
+            carry=""
+            if [ -n "$recorded" ] && _antigravity_flags_listed "$agy_bin" --conversation 2>/dev/null; then
+                printf 'cs: could not carry the %s conversation over; resuming the earlier Antigravity conversation.\n' "$_t_label" >&2
+                reopen="$recorded"
+                reopen_args=(--conversation "$reopen")
+            else
+                printf 'cs: could not carry the %s conversation over; starting a fresh Antigravity conversation.\n' "$_t_label" >&2
+            fi
+        fi
         warn "cs could not make a private directory under ${CS_CACHE_DIR:-$HOME/.cache/cs}/antigravity-runs: this run's conversation is recorded for a reopen only if the session has none yet."
+    fi
+    [ -n "$carry" ] || _cs_run_cleanup_carry
+    # A staged carry leaves the source engine current until the hook binds
+    # the new conversation. Ordinary opens and carry fallbacks record agy
+    # before it starts, so cs commands inside it see the running engine.
+    if [ -z "$carry" ] && ! cs_run_with_lease "$meta_dir" _cs_set_local_state_unlocked "$meta_dir/local/state" engine antigravity; then
+        _antigravity_launch_error "Could not record the session's engine in $meta_dir/local/state"
+        return 1
     fi
     # A seed cs -spawn staged: the shared consumer writes its brief into
     # .cs/brief.md and builds the kickoff, which goes in as agy's first
@@ -702,6 +892,8 @@ $prompt"
             spawn_wait="its tasks need an unencrypted Antigravity run with supported agy, the current cs hooks, and verified protection for its native history and queue cache (take it under Claude with: cs $session_name --engine claude)"
         elif [ -n "$rotation_handoff" ]; then
             spawn_wait="this open carries the rotation handoff"
+        elif [ -n "$carry" ]; then
+            spawn_wait="this open carries over a conversation"
         elif [ -n "$merge_kick" ]; then
             spawn_wait="this open carries -finish $merge_feature"
         elif ! _antigravity_flags_listed "$agy_bin" --prompt-interactive 2>/dev/null; then
@@ -751,6 +943,13 @@ $prompt"
     else
         printf '%s\n' "Antigravity via cs: session context is on ($rule_shown), $reopens. Rotate with /cs:rotate, then /exit and cs $session_name --from-handoff. A conversation started with /clear or /new gets no cs mail until you reopen the session."
     fi
+    if [ -n "$carry" ]; then
+        printf '%bCarrying over the %s conversation:%b %s %b(%s) — loads on your first prompt%b\n' \
+            "$DIM" "$(_transplant_label "$transplant_from")" "$NC" "${transplant_id:0:8}" "$DIM" "$transplant_size" "$NC"
+        [ -z "$recorded" ] \
+            || printf '%bThe earlier Antigravity conversation stays. To return to it:%b cs %s --resume-conversation %s\n' \
+                "$DIM" "$NC" "$session_name" "$recorded"
+    fi
     if [ -n "$rotation_handoff" ]; then
         cs_run_with_lease "$meta_dir" _launch_handoff_prepare "$session_dir" antigravity "$rotation_handoff" || {
             _antigravity_launch_error "Cannot record the Antigravity handoff attempt; the handoff stays pending."
@@ -776,6 +975,10 @@ $prompt"
     fi
     if [ -n "$rotation_handoff" ] && _handoff_is_unconsumed "$pending_handoff"; then
         warn "The Antigravity handoff attempt needs recovery. Reopen with: cs $session_name --resume. If no consumer was recorded, inspect native agy history first; do not replay with --from-handoff."
+    fi
+    if [ -n "$carry" ] && [ -n "$run_dir" ] && [ ! -e "$run_dir/bound" ] && [ ! -L "$run_dir/bound" ]; then
+        _cs_run_skip_engine_record=1
+        warn "cs saw no turn start in this run, so the carried-over conversation was not loaded and the Antigravity binding is unchanged."
     fi
     # The hook marks the run bound at its first model call. Without the mark
     # the kickoff may not have arrived; it is not sent again either way. Any
@@ -960,17 +1163,22 @@ _antigravity_hook_typed() {
 
 # SessionStart fires once for each conversation agy starts: the run's first
 # when the launch opened none, one /clear or /new started, and a subagent's;
-# never for one opened with --conversation or /resume. Once the run has bound
-# its conversation, a typed one is marked new in the run's directory, for
-# PreInvocation to move the session to it (_antigravity_hook_bind). The mark
-# is all this does: it never binds, and always answers {}.
+# never for one opened with --conversation or /resume. Record which new
+# conversation can receive carry before the run binds. Once bound, a typed
+# new conversation may take the session through /clear. SessionStart only
+# records these marks and leaves the binding to PreInvocation.
 _antigravity_hook_session_start() {  # payload
     local run_dir
     _antigravity_payload_read "$1" || return 0
     _antigravity_hook_typed || return 0
     run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || return 0
+    if [ ! -e "$run_dir/bound" ] && [ ! -L "$run_dir/bound" ]; then
+        if _antigravity_carry_pending "$run_dir" && cs_run_lease_owned "$CS_SESSION_DIR/.cs"; then
+            ( umask 077; set -C; printf '%s\n' "$AGY_HOOK_ID" > "$run_dir/carry-conversation" ) 2>/dev/null || true
+        fi
+        return 0
+    fi
     [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ] || return 0
-    [ -e "$run_dir/bound" ] || [ -L "$run_dir/bound" ] || return 0
     cs_run_lease_owned "$CS_SESSION_DIR/.cs" || return 0
     _antigravity_run_mark "$run_dir/new-$AGY_HOOK_ID"
 }
@@ -987,7 +1195,7 @@ _antigravity_hook_session_start() {  # payload
 # (_antigravity_hook_retake). The first model call of a turn carries the
 # unread mail, after the rotation, in one answer.
 _antigravity_hook_pre_invocation() {  # payload
-    local run_dir meta="$CS_SESSION_DIR/.cs" rotation="" weigh="" AGY_HOOK_DIGEST="" stop="" failed=""
+    local run_dir meta="$CS_SESSION_DIR/.cs" bind_reply="" weigh="" AGY_HOOK_DIGEST="" stop="" failed=""
     run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || run_dir=""
     # An encrypted session's vault home is checked before every model call of
     # the run that holds the lease; anything a command changed there stops the
@@ -1013,16 +1221,70 @@ _antigravity_hook_pre_invocation() {  # payload
         weigh=1
     fi
     if [ -n "$weigh" ] && cs_run_lease_owned "$meta"; then
-        # The lease runs its callback in a subshell, so the rotation comes
-        # back on descriptor 3; nothing else the callback prints is kept.
-        rotation=$(cs_run_with_lease "$meta" _antigravity_hook_bind "$CS_SESSION_DIR" "$AGY_HOOK_ID" "$run_dir" \
-            3>&1 >/dev/null 2>&1) || true
+        # The lease runs its callback in a subshell. Descriptor 3 carries the
+        # reply back in memory, including encrypted carry bytes, without a
+        # second read from the vault or a plaintext file in the run cache.
+        if ! bind_reply=$(cs_run_with_lease "$meta" _antigravity_hook_bind "$CS_SESSION_DIR" "$AGY_HOOK_ID" "$run_dir" \
+            3>&1 >/dev/null 2>&1) && _antigravity_carry_pending "$run_dir"; then
+            ANTIGRAVITY_HOOK_REPLY=$(_antigravity_hook_vault_error 'cs stopped this turn: it could not verify or bind the carried conversation. Close and reopen the session to retry the carry.')
+            return 0
+        fi
     fi
     [ "$AGY_HOOK_INVOCATION" != 0 ] || _antigravity_hook_mail_digest "$AGY_HOOK_ID"
-    [ -n "$rotation$AGY_HOOK_DIGEST" ] || return 0
-    ANTIGRAVITY_HOOK_REPLY=$(jq -nc --arg r "$rotation" --arg m "$AGY_HOOK_DIGEST" '
-        {injectSteps: ([$r, $m] | map(select(. != "") | {systemMessage: {systemMessage: .}})),
+    [ -n "$bind_reply$AGY_HOOK_DIGEST" ] || return 0
+    [ -n "$bind_reply" ] || bind_reply='{}'
+    ANTIGRAVITY_HOOK_REPLY=$(printf '%s\n' "$bind_reply" | jq -c --arg m "$AGY_HOOK_DIGEST" '
+        {injectSteps: ((.steps // []) + ([.rotation // "", $m] | map(select(. != "") | {systemMessage: {systemMessage: .}}))),
          terminationBehavior: ""}' 2>/dev/null) || ANTIGRAVITY_HOOK_REPLY=""
+}
+
+# Whether a staged carry-over payload is waiting for the run's first typed turn.
+_antigravity_carry_pending() {  # run_dir
+    [ -n "$1" ] && { [ -f "$1/carry.json" ] && [ ! -L "$1/carry.json" ] \
+        || { [ -f "$1/carry-digest" ] && [ ! -L "$1/carry-digest" ]; }; }
+}
+
+# The vault file can change during the hook. Hash and return the same bytes
+# from one no-follow open, with isolated Python imports as at launch.
+_antigravity_carry_read() {  # file, expected digest or empty for the protected cache
+    python3 -I -c '
+import hashlib, os, stat, sys
+
+with os.fdopen(os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as handle:
+    info = os.fstat(handle.fileno())
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+        sys.exit(1)
+    data = handle.read()
+if sys.argv[2] and hashlib.sha256(data).hexdigest() != sys.argv[2]:
+    sys.exit(1)
+sys.stdout.buffer.write(data)
+' "$1" "$2"
+}
+
+# Read into the binding callback's locals without changing the staged files.
+# A failed binding leaves both the payload and its lineage available to retry.
+_antigravity_carry_load() {  # run_dir
+    local run_dir="$1" expected="" file="$1/carry.json"
+    [ -f "$run_dir/carry-source" ] && [ ! -L "$run_dir/carry-source" ] \
+        && IFS= read -r carried_from < "$run_dir/carry-source" || return 1
+    case "$carried_from" in
+        claude:*|codex:*) _is_uuid "${carried_from#*:}" || return 1 ;;
+        *) return 1 ;;
+    esac
+    if [ -f "$run_dir/carry-digest" ] && [ ! -L "$run_dir/carry-digest" ]; then
+        IFS= read -r expected < "$run_dir/carry-digest" \
+            && [ -n "$expected" ] && [ -n "${_cs_private_pin_dir:-}" ] || return 1
+        file="$_cs_private_pin_dir/.cs-carry-$CS_RUN_ID.json"
+    fi
+    carry_payload=$(_antigravity_carry_read "$file" "$expected" | jq -ces '
+        select(length == 1) | .[0] | select(.steps | type == "array" and length > 0) | {steps}')
+}
+
+_antigravity_carry_discard() {  # run_dir
+    if [ -n "${_cs_private_pin_dir:-}" ]; then
+        rm -f "$_cs_private_pin_dir/.cs-carry-$CS_RUN_ID.json" 2>/dev/null || true
+    fi
+    rm -f "$1/carry.json" "$1/carry-digest" "$1/carry-source"
 }
 
 # Under the run lease. The session is bound to its run's first conversation,
@@ -1036,7 +1298,8 @@ _antigravity_hook_pre_invocation() {  # payload
 # marked held. A run without its directory cannot tell first from later, and
 # binds only a session that has no conversation yet (or the legacy word).
 _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
-    local session_dir="$1" id="$2" run_dir="$3" previous opened="" source=startup reason=fresh log_dir handoff="" receipt_dir
+    local session_dir="$1" id="$2" run_dir="$3" previous opened="" source=startup reason=fresh log_dir handoff="" receipt_dir carried_from=""
+    local carry_payload="" carry_skipped=""
     if [ -n "$run_dir" ]; then
         if _antigravity_explicit_resume_pending "$run_dir"; then
             local expected
@@ -1052,6 +1315,19 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
             _antigravity_hook_rebind_clear "$session_dir" "$id" "$run_dir" || true
             _antigravity_run_mark "$run_dir/seen-$id"
             return 0
+        fi
+        if _antigravity_carry_pending "$run_dir"; then
+            [ "$AGY_HOOK_INVOCATION" = 0 ] && _antigravity_hook_typed || return 0
+            # A resumed conversation fires no SessionStart. The first typed
+            # turn decides the carry, even when other hooks inserted steps.
+            local carry_conversation=""
+            if [ -f "$run_dir/carry-conversation" ] && [ ! -L "$run_dir/carry-conversation" ]; then
+                IFS= read -r carry_conversation < "$run_dir/carry-conversation" || carry_conversation=""
+            fi
+            if [ "$id" != "$carry_conversation" ]; then
+                _antigravity_carry_discard "$run_dir" || return 1
+                carry_skipped=1
+            fi
         fi
         IFS= read -r opened < "$run_dir/opened" 2>/dev/null || opened=""
     fi
@@ -1075,10 +1351,21 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
             || { [ -n "$previous" ] && [ "$previous" != "$CS_ANTIGRAVITY_LATEST" ]; }; }; then
             return 0
         fi
+        if [ -n "$run_dir" ] && _antigravity_carry_pending "$run_dir"; then
+            _antigravity_carry_load "$run_dir" || return 1
+            source=transplant
+            reason=transplant
+        fi
         if [ "$previous" != "$id" ]; then
             cs_binding_write "$session_dir" antigravity "$id" || return 1
+        fi
+        if [ "$previous" != "$id" ] || [ -n "$carry_payload$carry_skipped" ]; then
             _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine antigravity || return 1
         fi
+    fi
+    if [ -n "$carry_payload" ]; then
+        _antigravity_carry_discard "$run_dir" || return 1
+        printf '%s\n' "$carry_payload" >&3
     fi
     # Both log lines go to .cs/local, or into the vault for a run the launch
     # ran on the vault home (_antigravity_log_dir); a .cs/private that came
@@ -1088,7 +1375,11 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
             CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Rebound antigravity conversation: %s -> %s\n' \
                 "$(date '+%Y-%m-%d %H:%M:%S')" "${previous:-none}" "$id" || true
         fi
-        if _is_uuid "$previous" && [ "$reason" != handoff ]; then
+        if [ "$reason" = transplant ]; then
+            local from_id="$previous"
+            _is_uuid "$from_id" || from_id=""
+            _timeline_rotated "$session_dir" "$from_id" "$id" transplant "" antigravity "$carried_from" || true
+        elif _is_uuid "$previous" && [ "$reason" != handoff ]; then
             _timeline_rotated "$session_dir" "$previous" "$id" "$reason" "$handoff" antigravity || true
         fi
     fi
@@ -1172,7 +1463,7 @@ $(_handoff_refusal_warning "$shown/$handoff" "$refusal" "$(_codex_marker_shown "
         fi
     fi
     if [ -n "$context" ]; then
-        { printf '%s' "$context" >&3; } 2>/dev/null || true
+        { jq -nc --arg context "$context" '{rotation: $context}' >&3; } 2>/dev/null || true
     fi
     if log_dir=$(_antigravity_log_dir "$session_dir" "$run_dir"); then
         CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Rebound antigravity conversation: %s -> %s\n' \

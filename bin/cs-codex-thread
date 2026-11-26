@@ -274,7 +274,7 @@ READABLE_DEPTH = 32
 NOT_BARE = re.compile(r'(?:-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?|true|false|null|NaN|-?Infinity|\|[-+]?)\Z|[\[{"]')
 # Control characters JSON escapes, but for the tab and the newline a laid-out string keeps.
 CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f]")
-ENGINE_NAMES = {"claude": "Claude", "codex": "Codex"}
+ENGINE_NAMES = {"claude": "Claude", "codex": "Codex", "antigravity": "Antigravity"}
 # Claude Code's own label for messages no model produced.
 CARRIED_MODEL = "<synthetic>"
 # The note carried_note writes, found again at the start of a prompt when a
@@ -284,6 +284,25 @@ DEFAULT_CLAUDE_VERSION = "2.1.0"
 # The oldest Claude Code checked to render a display-only MCP tool, the row it draws for a tool
 # it does not have. Without one it draws nothing, so below this only Bash, its own, is a row.
 NATIVE_TOOL_ROWS_SINCE = (2, 1, 326)
+# agy 1.5.17 truncates a single injected systemMessage step at 48 KiB (49,152 bytes,
+# including its ~240-byte wrapper), while multiple injectSteps each keep up to that cap.
+AGY_STEP_CHUNK_BYTES = 32000
+AGY_METADATA_NAMES = r"(?:ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)"
+AGY_WRAPPER_TAG = re.compile(rf"<(?=/?(?:SYSTEM_MESSAGE|USER_REQUEST|{AGY_METADATA_NAMES})>)")
+AGY_METADATA_TAG = re.compile(
+    rf"<(?P<metadata>{AGY_METADATA_NAMES})>(?:(?!</{AGY_METADATA_NAMES}>).)*"
+    r"</(?P=metadata)>\s*", re.S)
+# The prompt and the trailing metadata can each quote the request delimiter.
+AGY_USER_REQUEST = re.compile(
+    rf"\A<USER_REQUEST>(?P<request>.*)</USER_REQUEST>\s*(?:{AGY_METADATA_TAG.pattern})*\Z", re.S)
+AGY_STEP_TIMESTAMPS = re.compile(r"\A(?:(?:Created|Completed) At: [^\r\n]*\r?\n)+")
+AGY_SHELL_EXIT = re.compile(r"^Command exited with code (-?\d+)\.$", re.M)
+AGY_SYSTEM_WRAPPER = re.compile(r"(?:\A|\n)<SYSTEM_MESSAGE>(\r?\n)(.*)\1</SYSTEM_MESSAGE>\s*\Z", re.S)
+AGY_HOOK_INJECTED_PREFIX = re.compile(r"\AThe following system message was injected by a PreInvocation hook:\r?\n")
+AGY_CARRIED_PART = re.compile(r"\A\[cs carried conversation part ([1-9][0-9]{0,8})/([1-9][0-9]{0,8})\]\r?\n\r?\n")
+AGY_CARRIED_FORMAT = "[cs carried conversation format 1]\n\n"
+AGY_CARRIED_ROLE = re.compile(r"(?:\A|\n\n)### (User|Assistant)\n\n")
+AGY_CARRIED_LITERAL_HEADING = re.compile(r"^(\\*)### (?:User|Assistant)(?=\r?$)", re.M)
 
 
 def open_block(text, closer=None):
@@ -320,14 +339,14 @@ class History:
         # outputs whose calls came before it.
         self.calls = {}
 
-    def add(self, role, text, timestamp=None, closed=False, tool=None):
+    def add(self, role, text, timestamp=None, closed=False, tool=None, *, new_message=False):
         # A closed part is cs's own markdown, every block in it closed. A
         # message is one markdown document, so a block the text before it
         # left open is closed first, or the two would pair up.
         if not isinstance(text, str) or not text.strip():
             return
         last = self.messages[-1] if self.messages else None
-        if last is None or last["role"] != role:
+        if new_message or last is None or last["role"] != role:
             last = {"role": role, "parts": [], "timestamp": timestamp, "closed": 0}
             self.messages.append(last)
         if tool is not None:
@@ -369,17 +388,26 @@ def history_stats(messages):
                        "characters": sum(len(m["text"]) for m in messages)})
 
 
-def carried_note(engine, native_id, limit):
+def carried_note(engine, native_id, limit, target=None):
     source = ENGINE_NAMES.get(engine, engine)
     kind = "thread" if engine == "codex" else "conversation"
-    hidden = "Codex's reasoning is" if engine == "codex" else "Claude's thinking is"
-    # Codex's model reads every carried call as text; Claude's reads a call cs
-    # can show with its result as a tool call. No "]": CARRIED_NOTE ends at one.
+    # CARRIED_NOTE ends at "]", which a transcript basename may contain.
+    label = native_id.replace("]", "&#93;")
+    if engine == "codex":
+        hidden = "Codex's reasoning is"
+    elif engine == "antigravity":
+        hidden = "Antigravity's thinking is"
+    else:
+        hidden = "Claude's thinking is"
+    if target is None:
+        target = "claude" if engine == "codex" else "codex"
+    # Codex's and Antigravity's models read every carried call as text; Claude's
+    # reads a call cs can show with its result as a tool call.
     calls = ("A tool call appears as a tool call where Claude can show it with its result, and as text otherwise"
-             if engine == "codex" else "Tool calls and their results appear as text")
+             if target == "claude" else "Tool calls and their results appear as text")
     return ("[cs carried this conversation over from {} {} {}. {}, each result cut to its first {:,} characters; "
             "{} not included. Those tools were {}'s: use your own from here on.]").format(
-                source, kind, native_id, calls, limit, hidden, source)
+                source, kind, label, calls, limit, hidden, source)
 
 
 def write_private(path, text):
@@ -1437,26 +1465,302 @@ def matched_tools(tools):
             yield indices[0], matches[0]
 
 
+def open_antigravity_transcript(home, conversation_id):
+    """Open an Antigravity conversation's full JSONL transcript without following symlinks."""
+    if not isinstance(conversation_id, str) or not THREAD_ID.fullmatch(conversation_id):
+        raise BootstrapError("Antigravity conversation ID must be an exact UUID")
+    parts = (".gemini", "antigravity-cli", "brain", conversation_id,
+             ".system_generated", "logs", "transcript_full.jsonl")
+    try:
+        directory = os.open(Path(home), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError as exc:
+        raise BootstrapError("Antigravity keeps no saved history for conversation " + conversation_id) from exc
+    except OSError as exc:
+        raise BootstrapError("Antigravity home path is invalid") from exc
+    try:
+        for part in parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    except FileNotFoundError as exc:
+        raise BootstrapError("Antigravity keeps no saved history for conversation " + conversation_id) from exc
+    except OSError as exc:
+        raise BootstrapError("Antigravity transcript path is invalid for conversation " + conversation_id) from exc
+    finally:
+        os.close(directory)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+            raise BootstrapError("unexpected Antigravity transcript file")
+    except BaseException:
+        os.close(fd)
+        raise
+    return os.fdopen(fd, "r", encoding="utf-8", errors="replace")
+
+
+def antigravity_user_text(content):
+    match = AGY_USER_REQUEST.match(content)
+    if match:
+        text = match["request"].strip()
+    else:
+        text = AGY_METADATA_TAG.sub("", content).strip()
+    return REMINDER_TAG.sub("&lt;", CARRIED_NOTE.sub("", text))
+
+
+def antigravity_carried_system_part(content):
+    """Extract a carry part from the hook's system step, preserving its body."""
+    match = AGY_SYSTEM_WRAPPER.search(content)
+    body = AGY_HOOK_INJECTED_PREFIX.sub("", match[2] if match else content)
+    note = CARRIED_NOTE.match(body)
+    if note:
+        body = body[note.end():]
+    part = AGY_CARRIED_PART.match(body)
+    if part:
+        return int(part[1]), int(part[2]), body[part.end():]
+    if note:
+        return 1, 1, body
+    return None
+
+
+def antigravity_carried_messages(parts):
+    if not parts or any((index, total) != (expected, len(parts))
+                        for expected, (index, total, _) in enumerate(parts, 1)):
+        return
+    bodies = [body for _, _, body in parts]
+    exact = bodies[0].startswith(AGY_CARRIED_FORMAT)
+    if exact:
+        body = "".join(bodies)[len(AGY_CARRIED_FORMAT):]
+    else:
+        # Older exports grouped parts of individual messages. Reinsert a
+        # separator before a heading at the start of a new part. Whitespace
+        # already changed by the old exporter cannot be reconstructed.
+        body = bodies[0] + "".join(("\n\n" if AGY_CARRIED_ROLE.match(part) else "") + part
+                                  for part in bodies[1:])
+    fields = AGY_CARRIED_ROLE.split(REMINDER_TAG.sub("&lt;", body))
+    if fields[0]:
+        yield "user", fields[0]
+    for role, message in zip(fields[1::2], fields[2::2]):
+        if exact:
+            message = AGY_CARRIED_LITERAL_HEADING.sub(lambda m: m[0][1:] if m[1] else m[0], message)
+        yield role.lower(), message
+
+
+def read_antigravity(home, conversation_id, limit):
+    history = History()
+    pending_calls = []
+    pending_user = None
+    carry_parts = []
+    carry_stamp = None
+
+    def finish_input():
+        # The hook's system steps follow USER_INPUT in the native transcript,
+        # but the carried conversation happened before that user message.
+        nonlocal pending_user
+        carried = False
+        for role, message in antigravity_carried_messages(carry_parts):
+            history.add(role, message, carry_stamp, new_message=True)
+            carried = True
+        carry_parts.clear()
+        if pending_user is not None:
+            history.add("user", *pending_user, new_message=carried)
+            pending_user = None
+
+    with open_antigravity_transcript(home, conversation_id) as handle:
+        for line in handle:
+            try:
+                record = json.loads(line)
+            except (ValueError, RecursionError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            kind = record.get("type")
+            source = record.get("source")
+            stamp = record.get("created_at")
+            stamp = stamp if isinstance(stamp, str) else None
+            content = record.get("content")
+            if kind == "USER_INPUT" and source == "USER_EXPLICIT":
+                if pending_user is not None:
+                    finish_input()
+                pending_calls = []
+                text = antigravity_user_text(content) if isinstance(content, str) else ""
+                images = len(record["media"]) if isinstance(record.get("media"), list) else 0
+                if images:
+                    text = (text + "\n" if text else "") + "\n".join(["[image]"] * images)
+                pending_user = (text, stamp)
+            elif kind == "CHECKPOINT":
+                if isinstance(content, str) and content.strip():
+                    finish_input()
+                    pending_calls = []
+                    history.reset()
+                    summary = REMINDER_TAG.sub("&lt;", content.strip())
+                    history.add("user", "[Summary of the earlier conversation]\n" + summary, stamp)
+            elif kind == "SYSTEM_MESSAGE" and source in ("SYSTEM_SDK", "SYSTEM") and isinstance(content, str):
+                part = antigravity_carried_system_part(content)
+                if part is not None:
+                    if not carry_parts:
+                        carry_stamp = stamp
+                    carry_parts.append(part)
+            elif kind == "PLANNER_RESPONSE" and source == "MODEL":
+                finish_input()
+                pending_calls = []
+                if isinstance(content, str) and content.strip():
+                    history.add("assistant", content, stamp)
+                tool_calls = record.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    step_idx = record.get("step_index")
+                    prefix = step_idx if type(step_idx) is int else len(history.messages)
+                    for idx, tc in enumerate(tool_calls):
+                        if not isinstance(tc, dict):
+                            continue
+                        name = tc.get("name")
+                        raw_args = tc.get("args")
+                        args = raw_args
+                        if isinstance(raw_args, str):
+                            try:
+                                args = json.loads(raw_args, object_pairs_hook=unique_keys)
+                            except (ValueError, RecursionError):
+                                args = None
+                        call_id = "agy_{}_{}".format(prefix, idx)
+                        pending_calls.append((call_id, name))
+                        history.add("assistant", tool_call(name, args), stamp, closed=True, tool={
+                            "call": call_id, "name": name,
+                            "input": args if isinstance(args, dict) else None,
+                            "namespace": "antigravity", "cwd": None})
+            elif kind == "GENERIC" and source == "MODEL":
+                finish_input()
+                call_id, name = pending_calls.pop(0) if pending_calls else (None, None)
+                raw_content = content if isinstance(content, str) else ""
+                cleaned = AGY_STEP_TIMESTAMPS.sub("", raw_content)
+                exit_match = (AGY_SHELL_EXIT.search(cleaned.partition("\nCommand output:\n")[0])
+                              if name == "run_command" else None)
+                exit_code = int(exit_match.group(1)) if exit_match else None
+                shell_failed = exit_code is not None and exit_code != 0
+                error_text = record.get("error").strip() if isinstance(record.get("error"), str) else ""
+                failed = record.get("status") in ("ERROR", "INVALID") or bool(error_text) or shell_failed
+                if error_text and error_text not in cleaned:
+                    cleaned = error_text + ("\n" + cleaned if cleaned.strip() else "")
+                text = trimmed(REMINDER_TAG.sub("&lt;", cleaned))
+                images = len(record["media"]) if isinstance(record.get("media"), list) else 0
+                output = text[:limit] + cut_note(text, limit) + "\n[image]" * images
+                history.add("assistant", tool_result(text, images, limit, failed), stamp, closed=True, tool={
+                    "result": call_id, "output": output, "failed": failed, "exit_code": exit_code})
+    finish_input()
+    return history.export()
+
+
+def split_utf8_text(text, max_bytes):
+    """Split text into chunks each at most max_bytes UTF-8 bytes, preferring paragraph and line breaks."""
+    if max_bytes < 1:
+        raise ValueError("UTF-8 chunk budget must be positive")
+    data = text.encode("utf-8")
+    if len(data) <= max_bytes:
+        return [text]
+    chunks, start = [], 0
+    while start + max_bytes < len(data):
+        end = start + max_bytes
+        # If the next byte would continue a code point, cut before its start.
+        while (data[end] & 0xC0) == 0x80:
+            end -= 1
+        if end == start:
+            raise ValueError("UTF-8 chunk budget cannot fit a code point")
+        # Limit both searches to the latter half of this byte window.
+        floor = start + max(1, (end - start) // 2)
+        paragraph = data.rfind(b"\n\n", floor, end)
+        if paragraph >= 0:
+            end = paragraph + 2
+        else:
+            newline = data.rfind(b"\n", floor, end)
+            if newline >= 0:
+                end = newline + 1
+        chunks.append(data[start:end].decode("utf-8"))
+        start = end
+    chunks.append(data[start:].decode("utf-8"))
+    return chunks
+
+
+def antigravity_carry_chunks(messages, note, chunk_bytes=AGY_STEP_CHUNK_BYTES):
+    """Build PreInvocation injectSteps payloads each staying below agy's 48 KiB per-step cap."""
+    blocks = []
+    for message in messages:
+        heading = "### User" if message["role"] == "user" else "### Assistant"
+        body = AGY_WRAPPER_TAG.sub("&lt;", message["text"])
+        body = AGY_CARRIED_LITERAL_HEADING.sub(lambda m: "\\" + m[0], body)
+        blocks.append(heading + "\n\n" + body)
+    # Reserve headroom for the note and part marker on chunk 1 and part marker on later chunks.
+    marker_reserve = len(note.encode("utf-8")) + 64
+    body_limit = max(1024, chunk_bytes - marker_reserve)
+    parts = split_utf8_text(AGY_CARRIED_FORMAT + "\n\n".join(blocks), body_limit)
+    total = len(parts)
+    steps = []
+    for index, body in enumerate(parts, 1):
+        if index == 1:
+            part = "[cs carried conversation part 1/{}]\n\n".format(total) if total > 1 else ""
+            text = note + "\n\n" + part + body
+        else:
+            text = "[cs carried conversation part {}/{}]\n\n".format(index, total) + body
+        steps.append({"systemMessage": {"systemMessage": text}})
+    return steps
+
+
+def export_antigravity(args):
+    """Write a Claude or Codex conversation as injectSteps JSON for Antigravity's first PreInvocation."""
+    if args.history_from_claude is not None:
+        source_engine = "claude"
+        source_id = args.history_source or Path(args.history_from_claude).stem
+        messages = read_claude(args.history_from_claude, args.clip)
+    else:
+        source_engine = "codex"
+        source_id = args.thread_id
+        messages = read_codex(codex_rollout(args.thread_id), args.clip)
+    if messages:
+        note = carried_note(source_engine, source_id, args.clip, target="antigravity")
+        steps = antigravity_carry_chunks(messages, note)
+        payload = {
+            "source": "{}:{}".format(source_engine, source_id),
+            "messages": len(messages),
+            "characters": sum(len(m["text"]) for m in messages),
+            "steps": steps,
+        }
+        write_private(
+            args.out,
+            LONE_SURROGATE.sub("\ufffd", json.dumps(payload, ensure_ascii=False, separators=(",", ":"))) + "\n",
+        )
+    return history_stats(messages)
+
+
+def read_antigravity_stats(args):
+    home = args.antigravity_home or str(Path.home())
+    return history_stats(read_antigravity(home, args.read_antigravity, args.clip))
+
+
 def claude_tool_use(call, cwd, version):
     name, args, namespace = call["name"], call["input"], call["namespace"]
     if not isinstance(name, str) or not isinstance(args, dict) or not native_arguments(args):
         return None
-    tool_name = name if name.startswith("mcp__") else "mcp__codex__" + name
-    if isinstance(namespace, str) and namespace not in ("", "functions"):
-        prefix = namespace if namespace.startswith("mcp__") else "mcp__codex__" + namespace
-        tool_name = prefix + "__" + name
-    elif name in ("exec_command", "shell", "shell_command"):
-        command = args.get("command", args.get("cmd"))
-        if isinstance(command, list):
-            command = shlex.join(str(word) for word in command)
-        if isinstance(command, str) and not ("cmd" in args and "command" in args):
-            # Claude's Bash input is a strict object; Codex's execution options
-            # stay behind, and a directory other than the session's goes into the command.
-            directory = args.get("workdir", args.get("working_directory"))
-            if isinstance(directory, str) and directory and os.path.normpath(directory) != os.path.normpath(cwd):
-                command = "cd " + shlex.quote(directory) + " && " + command
-            args = {"command": command}
+    if namespace == "antigravity":
+        if name == "run_command" and isinstance(args.get("CommandLine"), str):
+            args = {"command": args["CommandLine"]}
             tool_name = "Bash"
+        else:
+            tool_name = name if name.startswith("mcp__") else "mcp__antigravity__" + name
+    else:
+        tool_name = name if name.startswith("mcp__") else "mcp__codex__" + name
+        if isinstance(namespace, str) and namespace not in ("", "functions"):
+            prefix = namespace if namespace.startswith("mcp__") else "mcp__codex__" + namespace
+            tool_name = prefix + "__" + name
+        elif name in ("exec_command", "shell", "shell_command"):
+            command = args.get("command", args.get("cmd"))
+            if isinstance(command, list):
+                command = shlex.join(str(word) for word in command)
+            if isinstance(command, str) and not ("cmd" in args and "command" in args):
+                # Claude's Bash input is a strict object; Codex's execution options
+                # stay behind, and a directory other than the session's goes into the command.
+                directory = args.get("workdir", args.get("working_directory"))
+                if isinstance(directory, str) and directory and os.path.normpath(directory) != os.path.normpath(cwd):
+                    command = "cd " + shlex.quote(directory) + " && " + command
+                args = {"command": command}
+                tool_name = "Bash"
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", tool_name):
         return None
     leading = re.match(r"(\d+)\.(\d+)\.(\d+)", version or "")
@@ -1555,12 +1859,18 @@ def claude_transcript(messages, session_id, cwd, version, branch, note):
 
 
 def export_claude(args):
-    # A Codex thread written out as a Claude Code transcript that
-    # `claude --resume <session id>` continues. Prints what it carried.
-    messages = read_codex(codex_rollout(args.thread_id), args.clip)
+    # A Codex thread or Antigravity conversation written out as a Claude Code
+    # transcript that `claude --resume <session id>` continues. Prints what it carried.
+    if args.from_antigravity is not None:
+        home = args.antigravity_home or str(Path.home())
+        messages = read_antigravity(home, args.from_antigravity, args.clip)
+        source_engine, source_id = "antigravity", args.from_antigravity
+    else:
+        messages = read_codex(codex_rollout(args.thread_id), args.clip)
+        source_engine, source_id = "codex", args.thread_id
     if messages:
         cwd = str(Path(args.cwd).resolve(strict=True))
-        note = carried_note("codex", args.thread_id, args.clip)
+        note = carried_note(source_engine, source_id, args.clip, target="claude")
         # An unpaired escape, in a rollout line or in a command result decoded again, is a lone
         # surrogate once decoded; the transcript is strict UTF-8.
         write_private(args.out, LONE_SURROGATE.sub("\ufffd", claude_transcript(
@@ -1595,6 +1905,7 @@ def native_tool_item(call, result, cwd):
     file:// URI, not the app-server's camelCase that same_display_item reads back.
     Measured on Codex 0.169.0-alpha.11.1; CI runs the real-Codex cases on its pinned Codex."""
     name, args = call["name"], call["input"]
+    namespace = call.get("namespace")
     status = "failed" if result["failed"] else "completed"
     item_id = str(uuid.uuid4())
     if name == "Bash" and isinstance(args, dict) and isinstance(args.get("command"), str):
@@ -1606,8 +1917,15 @@ def native_tool_item(call, result, cwd):
                 "cwd": Path(directory).as_uri(), "source": "agent", "status": status,
                 "parsed_cmd": [{"type": "unknown", "cmd": command}], "aggregated_output": result["output"],
                 "exit_code": result["exit_code"]}
-    # Keep Claude's built-ins identifiable and restore MCP tools' actual server and tool names.
-    server = "claude"
+    if namespace == "antigravity" and name == "run_command" and isinstance(args, dict) \
+            and isinstance(args.get("CommandLine"), str):
+        command = args["CommandLine"]
+        return {"type": "CommandExecution", "id": item_id, "command": ["bash", "-lc", command],
+                "cwd": Path(cwd).as_uri(), "source": "agent", "status": status,
+                "parsed_cmd": [{"type": "unknown", "cmd": command}], "aggregated_output": result["output"],
+                "exit_code": result["exit_code"]}
+    # Keep built-ins identifiable by source engine and restore MCP tools' actual server and tool names.
+    server = "antigravity" if namespace == "antigravity" else "claude"
     name = name if isinstance(name, str) and name else "tool"
     if name.startswith("mcp__"):
         parts = name.split("__", 2)
@@ -1825,7 +2143,13 @@ def bootstrap(args):
         if not messages:
             raise BootstrapError("the Claude conversation has nothing to carry over")
         source = args.history_source or Path(args.history_from_claude).stem
-        provenance = model_message("developer", carried_note("claude", source, args.clip))
+        provenance = model_message("developer", carried_note("claude", source, args.clip, target="codex"))
+    elif args.history_from_antigravity:
+        home = args.antigravity_home or str(Path.home())
+        messages = read_antigravity(home, args.history_from_antigravity, args.clip)
+        if not messages:
+            raise BootstrapError("the Antigravity conversation has nothing to carry over")
+        provenance = model_message("developer", carried_note("antigravity", args.history_from_antigravity, args.clip, target="codex"))
     thread_id = prepare_thread(args, cwd, instructions, messages, provenance, True, time.monotonic() + args.timeout)
     if thread_id is None:
         # Codex did not show the native tool rows back and that thread is gone: carry
@@ -2230,12 +2554,22 @@ def main():
     parser.add_argument("--shared-home")
     parser.add_argument("--home")
     parser.add_argument("--export-claude", action="store_true",
-                        help="write --thread-id's saved history to --out as a Claude transcript for --session-id")
+                        help="write --thread-id or --from-antigravity history to --out as a Claude transcript")
+    parser.add_argument("--export-antigravity", action="store_true",
+                        help="write --thread-id or --history-from-claude history to --out as Antigravity injectSteps JSON")
+    parser.add_argument("--from-antigravity", metavar="CONVERSATION_ID",
+                        help="the Antigravity conversation ID to export to Claude")
     parser.add_argument("--read-claude", metavar="TRANSCRIPT",
-                        help="print, as JSON, what a Claude transcript would carry into a thread")
+                        help="print, as JSON, what a Claude transcript would carry into another engine")
+    parser.add_argument("--read-antigravity", metavar="CONVERSATION_ID",
+                        help="print, as JSON, what an Antigravity conversation would carry into another engine")
     parser.add_argument("--history-from-claude", metavar="TRANSCRIPT",
-                        help="carry a Claude transcript into the new thread, after the instructions")
-    parser.add_argument("--history-source", help="the Claude conversation ID the carried note names")
+                        help="carry a Claude transcript into the new thread or Antigravity export")
+    parser.add_argument("--history-from-antigravity", metavar="CONVERSATION_ID",
+                        help="carry an Antigravity conversation into the new Codex thread, after the instructions")
+    parser.add_argument("--antigravity-home", metavar="DIR",
+                        help="home directory holding .gemini/antigravity-cli/brain (defaults to $HOME)")
+    parser.add_argument("--history-source", help="the Claude conversation UUID the carried note names")
     parser.add_argument("--session-id")
     parser.add_argument("--out")
     parser.add_argument("--claude-version")
@@ -2250,14 +2584,31 @@ def main():
         parser.error("--clip must be a positive number of characters")
     if args.thread_id is not None and not THREAD_ID.fullmatch(args.thread_id):
         parser.error("--thread-id must be an exact Codex UUID")
+    if args.history_source is not None and not THREAD_ID.fullmatch(args.history_source):
+        parser.error("--history-source must be an exact Claude UUID")
+    for flag, value in (("--from-antigravity", args.from_antigravity),
+                        ("--read-antigravity", args.read_antigravity),
+                        ("--history-from-antigravity", args.history_from_antigravity)):
+        if value is not None and not THREAD_ID.fullmatch(value):
+            parser.error(flag + " must be an exact Antigravity UUID")
     if args.export_claude:
-        if args.thread_id is None or args.out is None or args.cwd is None:
-            parser.error("--export-claude needs --thread-id, --cwd and --out")
+        if (args.thread_id is None) == (args.from_antigravity is None):
+            parser.error("--export-claude needs exactly one of --thread-id or --from-antigravity")
+        if args.out is None or args.cwd is None:
+            parser.error("--export-claude needs --cwd and --out")
         if args.session_id is None or not THREAD_ID.fullmatch(args.session_id):
             parser.error("--export-claude needs --session-id, a UUID")
+    elif args.export_antigravity:
+        if (args.thread_id is None) == (args.history_from_claude is None):
+            parser.error("--export-antigravity needs exactly one of --thread-id or --history-from-claude")
+        if args.out is None:
+            parser.error("--export-antigravity needs --out")
     elif args.read_claude is not None:
         if args.thread_id is not None or args.latest_turn or args.project_config:
             parser.error("--read-claude reads no thread")
+    elif args.read_antigravity is not None:
+        if args.thread_id is not None or args.latest_turn or args.project_config:
+            parser.error("--read-antigravity reads no thread")
     elif args.has_thread:
         if args.thread_id is None:
             parser.error("--has-thread needs --thread-id")
@@ -2291,9 +2642,14 @@ def main():
             parser.error("--project-config reads no thread")
         if not args.latest_turn and not args.project_config and args.instructions_file is None:
             parser.error("--instructions-file is required")
+        if args.history_from_claude is not None and args.history_from_antigravity is not None:
+            parser.error("choose only one of --history-from-claude or --history-from-antigravity")
         if args.history_from_claude is not None and (
                 args.thread_id is not None or args.latest_turn or args.project_config):
             parser.error("--history-from-claude starts a new thread")
+        if args.history_from_antigravity is not None and (
+                args.thread_id is not None or args.latest_turn or args.project_config):
+            parser.error("--history-from-antigravity starts a new thread")
 
     def interrupted(_signum, _frame):
         raise KeyboardInterrupt
@@ -2302,8 +2658,12 @@ def main():
     try:
         if args.export_claude:
             printed = export_claude(args)
+        elif args.export_antigravity:
+            printed = export_antigravity(args)
         elif args.read_claude is not None:
             printed = read_claude_stats(args)
+        elif args.read_antigravity is not None:
+            printed = read_antigravity_stats(args)
         elif args.project_config:
             printed = project_config(args)
         elif args.has_thread:
@@ -2332,10 +2692,11 @@ def main():
             else "could not write the vault Codex home's config.toml" if args.seed_config
             else "could not look for the thread's history" if args.has_thread
             else "could not read the active rollout" if args.queue_snapshot is not None
-            else "could not read the Antigravity transcript" if args.antigravity_queue_snapshot is not None
+            else "could not read the Antigravity transcript" if args.antigravity_queue_snapshot is not None or args.read_antigravity is not None
             else "could not read the queue file" if args.queue_file and args.queue_file[0] == "first-line"
             else "could not write the queue file" if args.queue_file is not None
             else "could not write the Claude transcript" if args.export_claude
+            else "could not write the Antigravity carry-over" if args.export_antigravity
             else "could not read the Claude transcript" if args.read_claude is not None
             else "could not read bootstrap inputs")
         print("cs-codex-thread: " + message, file=sys.stderr)

@@ -61,7 +61,7 @@ CODEX
 #!/usr/bin/env bash
 case " $* " in
     *" --seed-config "*|*" --has-thread "*) exec python3 "$CS_REAL_THREAD_HELPER" "$@" ;;
-    *" --export-claude "*|*" --read-claude "*)
+    *" --export-claude "*|*" --read-claude "*|*" --read-antigravity "*)
         printf '%s\n' "$*" >> "$CS_HELPER_LOG.real"
         [ -n "${CS_HELPER_SWAP_STAGED:-}" ] || exec python3 "$CS_REAL_THREAD_HELPER" "$@"
         # The converted transcript swapped for a link while the question waits.
@@ -77,7 +77,7 @@ while [ "$#" -gt 0 ]; do
     if [ "$1" = --thread-id ]; then
         thread_id="$2"
         shift 2
-    elif [ "$1" = --history-from-claude ]; then
+    elif [ "$1" = --history-from-claude ] || [ "$1" = --history-from-antigravity ]; then
         if [ -n "${CS_HELPER_FAIL_CARRY:-}" ]; then
             printf 'cs-codex-thread: codex app-server rejected thread/inject_items\n' >&2
             exit 1
@@ -913,6 +913,84 @@ test_codex_carry_failure_resumes_the_earlier_thread() {
     fi
 }
 
+_tp_agy_id=22222222-2222-4222-8222-222222222222
+
+_tp_write_agy_transcript() {  # id, [home]
+    local id="$1" home="${2:-$HOME}" path
+    path="$home/.gemini/antigravity-cli/brain/$id/.system_generated/logs/transcript_full.jsonl"
+    mkdir -p "${path%/*}"
+    cat > "$path" <<'JSONL'
+{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-11-25T09:00:00Z","content":"<USER_REQUEST>\nRemember SILVER-HAWK\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nnow\n</ADDITIONAL_METADATA>"}
+{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-25T09:00:01Z","content":"Noted SILVER-HAWK."}
+JSONL
+}
+
+_tp_mark_last_antigravity() {  # session_dir, [id]
+    local dir="$1" id="${2:-$_tp_agy_id}"
+    printf '%s\n' "$id" > "$dir/.cs/local/antigravity-conversation"
+    if grep -q '^engine:' "$dir/.cs/local/state" 2>/dev/null; then
+        sed 's/^engine:.*/engine: antigravity/' "$dir/.cs/local/state" > "$dir/.cs/local/state.tmp"
+        mv "$dir/.cs/local/state.tmp" "$dir/.cs/local/state"
+    else
+        printf 'engine: antigravity\n' >> "$dir/.cs/local/state"
+    fi
+}
+
+test_claude_reopen_carries_the_newer_antigravity_conversation() {
+    local output session_dir old_id new_id
+    output=$("$CS_BIN" agy-to-claude --engine claude </dev/null 2>&1) || { echo "$output"; return 1; }
+    session_dir=$(_engine_session_dir agy-to-claude)
+    old_id=$(_tp_claude_id "$session_dir")
+    _tp_mark_last_antigravity "$session_dir"
+    _tp_write_agy_transcript "$_tp_agy_id"
+
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" agy-to-claude --engine claude <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "The newest conversation here is Antigravity's" "the offer names Antigravity" || return 1
+    assert_output_contains "$output" "continue the Antigravity conversation in Claude" "y describes the carry-over" || return 1
+    assert_output_contains "$output" "resume the earlier Claude conversation instead" "e is offered beside the earlier conversation" || return 1
+    assert_output_contains "$output" "Carrying over the Antigravity conversation" "y says what it carried" || return 1
+    new_id=$(_tp_claude_id "$session_dir")
+    [ "$new_id" != "$old_id" ] || { echo "  FAIL: y did not rebind"; return 1; }
+    assert_file_contains "$(_tp_project_dir "$session_dir")/$new_id.jsonl" 'SILVER-HAWK' "the carried Claude transcript holds the Antigravity text" || return 1
+    jq -e --arg from "$old_id" --arg to "$new_id" --arg src "antigravity:$_tp_agy_id" \
+        'select(.event == "rotated" and .engine == "claude" and .from == $from and .to == $to
+                and .reason == "transplant" and .carried_from == $src)' \
+        "$session_dir/.cs/timeline.jsonl" >/dev/null || { echo "  FAIL: no Antigravity transplant rotation in timeline"; return 1; }
+
+    # Legacy "latest" binding is never offered as a carry-over.
+    _tp_mark_last_antigravity "$session_dir" latest
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" agy-to-claude --engine claude <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" "The newest conversation" "legacy latest is skipped" || return 1
+    assert_output_contains "$output" "Continue previous conversation?" "usual prompt follows for legacy latest" || return 1
+}
+
+test_codex_reopen_carries_the_newer_antigravity_conversation() {
+    local output session_dir
+    output=$("$CS_BIN" agy-to-codex --engine codex </dev/null 2>&1) || { echo "$output"; return 1; }
+    session_dir=$(_engine_session_dir agy-to-codex)
+    _tp_mark_last_antigravity "$session_dir"
+    _tp_write_agy_transcript "$_tp_agy_id"
+    : > "$CS_HELPER_LOG"
+
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" agy-to-codex --engine codex <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "The newest conversation here is Antigravity's" "the offer names Antigravity" || return 1
+    assert_output_contains "$output" "continue the Antigravity conversation in Codex" "y describes the carry-over" || return 1
+    assert_output_contains "$output" "Carried over the Antigravity conversation" "y says what it carried" || return 1
+    assert_file_contains "$CS_HELPER_LOG" "history-from-antigravity $_tp_agy_id --antigravity-home $HOME" "helper receives Antigravity source and home" || return 1
+    assert_eq "$_tp_carried_thread" "$(cat "$session_dir/.cs/local/codex-thread-id")" "the carried thread is bound" || return 1
+    jq -e --arg from "$_tp_codex_thread" --arg to "$_tp_carried_thread" --arg src "antigravity:$_tp_agy_id" \
+        'select(.event == "rotated" and .engine == "codex" and .from == $from and .to == $to
+                and .reason == "transplant" and .carried_from == $src)' \
+        "$session_dir/.cs/timeline.jsonl" >/dev/null || { echo "  FAIL: no Antigravity transplant rotation in timeline"; return 1; }
+
+    # Missing Antigravity transcript prints one dim line and falls back to the usual prompt.
+    rm -f "$HOME/.gemini/antigravity-cli/brain/$_tp_agy_id/.system_generated/logs/transcript_full.jsonl"
+    _tp_mark_last_antigravity "$session_dir"
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" agy-to-codex --engine codex <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "the Antigravity conversation cannot be carried over: Antigravity keeps no saved history" "unreadable reason shown" || return 1
+    assert_output_contains "$output" "Continue previous Codex conversation?" "usual question follows" || return 1
+}
+
 run_test test_collision_resume_preserves_explicit_engine
 run_test test_collision_attended_open_preserves_explicit_engine
 run_test test_collision_without_explicit_engine_uses_feature_preference
@@ -959,4 +1037,6 @@ run_test test_codex_reopen_carries_the_newer_claude_conversation
 run_test test_codex_first_open_after_claude_names_no_earlier_thread
 run_test test_codex_reopen_e_and_n_do_not_carry
 run_test test_codex_carry_failure_resumes_the_earlier_thread
+run_test test_claude_reopen_carries_the_newer_antigravity_conversation
+run_test test_codex_reopen_carries_the_newer_antigravity_conversation
 report_results

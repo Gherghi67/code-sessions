@@ -138,17 +138,21 @@ the persistent thread ID. Process exit alone does not acknowledge a conversation
 Switching engines leaves the other engine's binding alone.
 
 A carry-over (`lib/47-transplant.sh`) is offered on an attended reopen under
-Claude or Codex when the session's last run was under the other of the two.
-`cs-codex-thread` converts in both directions: `--export-claude` writes a Codex
-thread's saved rollout as a Claude transcript, and `--history-from-claude`
-starts a new thread carrying a Claude transcript. A converted Claude transcript
-waits for the answer in Claude Code's projects dir under a dot name without
-`.jsonl`, never in the agent-writable `.cs/local`, and `y` renames it to the
-conversation's name; a staged name that is no longer a plain file is refused.
-The launch stages the result as an ordinary candidate with reason `transplant`
-and a `carried_from` field, `<engine>:<native id>`, and commits it the usual
-way, so the `rotated` event names the source conversation. It is recorded even
-when the target engine had no conversation before.
+Claude, Codex, or Antigravity when the session's last run was under one of the
+other two engines. `cs-codex-thread` converts across all six directed pairs:
+`--export-claude` writes a Codex thread or Antigravity conversation as a Claude
+transcript, `--history-from-claude` and `--history-from-antigravity` start a
+new Codex thread carrying the source conversation, and `--export-antigravity`
+writes a Claude or Codex conversation as chunked `PreInvocation` `injectSteps`
+JSON for Antigravity. A converted Claude transcript waits for the answer in
+Claude Code's projects dir under a dot name without `.jsonl`, never in the
+agent-writable `.cs/local`, and `y` renames it to the conversation's name; a
+staged name that is no longer a plain file is refused. An Antigravity carry-over
+waits in the private run cache (or inside `.cs/private` pinned by a SHA-256
+digest in the run cache for encrypted sessions) and is injected once on the
+first typed prompt. Each target records the `rotated` event with reason
+`transplant` and a `carried_from` field, `<engine>:<native id>`, even when the
+target engine had no conversation before.
 
 Engine selection retains this order: an explicit `--engine`, then the saved
 session preference, then `CS_DEFAULT_ENGINE`, then a sole installed Codex adapter, otherwise Claude. The selected engine

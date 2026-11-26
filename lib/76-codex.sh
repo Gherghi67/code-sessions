@@ -316,24 +316,40 @@ _codex_spawn_reconcile() {  # session_dir, helper, codex_bin
     cs_write_atomic "$pending" jq 'del(.thread, .turn_before) | .attempted = false' "$pending"
 }
 
-# Offered when the session's newer conversation is Claude's (lib/47-transplant.sh).
-# The transcript is read before the question, so an empty or unreadable one is
-# never offered: the latter is named in one dim line and the usual question
-# follows. Sets the caller's transplant_from, transplant_id, transplant_size
-# and transplant_path (the transcript the new thread will carry).
+# Offered when the session's newer conversation is Claude's or Antigravity's
+# (lib/47-transplant.sh). The transcript is read before the question, so an
+# empty or unreadable one is never offered: the latter is named in one dim line
+# and the usual question follows. Sets the caller's transplant_from,
+# transplant_id, transplant_size and transplant_path (Claude's transcript file,
+# or Antigravity's home directory).
 _codex_transplant_prepare() {  # session_dir, helper
-    local source transcript stats
+    local source from src_id transcript agy_home stats
     source=$(_transplant_source "$1" codex) || return 0
-    transcript=$(_conversation_transcript "$1" "${source#* }") || return 0
-    if ! stats=$("$2" --read-claude "$transcript" 2>&1); then
-        _transplant_unreadable claude "$stats"
-        return 0
-    fi
-    [ "$(_transplant_count "$stats")" -gt 0 ] || return 0
-    transplant_from=claude
-    transplant_id=${source#* }
+    from=${source%% *}
+    src_id=${source#* }
+    case "$from" in
+        claude)
+            transcript=$(_conversation_transcript "$1" "$src_id") || return 0
+            if ! stats=$("$2" --read-claude "$transcript" 2>&1); then
+                _transplant_unreadable claude "$stats"
+                return 0
+            fi
+            transplant_path=$transcript
+            ;;
+        antigravity)
+            agy_home=$(_transplant_antigravity_home "$1") || return 0
+            if ! stats=$("$2" --read-antigravity "$src_id" --antigravity-home "$agy_home" 2>&1); then
+                _transplant_unreadable antigravity "$stats"
+                return 0
+            fi
+            transplant_path=$agy_home
+            ;;
+        *) return 0 ;;
+    esac
+    [ "$(_transplant_count "$stats")" -gt 0 ] || { transplant_path=""; return 0; }
+    transplant_from=$from
+    transplant_id=$src_id
     transplant_size=$(_transplant_size "$stats")
-    transplant_path=$transcript
 }
 
 # The actual cs process owns session.lock, so terminating that PID runs these
@@ -613,24 +629,30 @@ _launch_codex_bound() {
         cs_run_child "$helper" --codex-bin "$codex_bin" --cwd "$session_dir" \
             --instructions-file "$context_file" --thread-id "$recorded_id" > "$prepared_file" || helper_status=$?
     elif [ -n "$carry" ]; then
-        # y on a carry-over: the new thread takes the Claude conversation
+        # y on a carry-over: the new thread takes the other engine's conversation
         # after its context. When that fails, the helper says why, one line
         # says what happens instead, and the launch does what y did before:
         # resume this engine's own thread, or start a fresh one.
+        local -a carry_args=()
+        case "$transplant_from" in
+            claude) carry_args=(--history-from-claude "$transplant_path" --history-source "$transplant_id") ;;
+            antigravity) carry_args=(--history-from-antigravity "$transplant_id" --antigravity-home "$transplant_path") ;;
+        esac
         cs_run_child "$helper" --codex-bin "$codex_bin" --cwd "$session_dir" \
-            --instructions-file "$context_file" --history-from-claude "$transplant_path" \
-            --history-source "$transplant_id" > "$prepared_file" || helper_status=$?
+            --instructions-file "$context_file" ${carry_args[@]+"${carry_args[@]}"} > "$prepared_file" || helper_status=$?
         if [ "$helper_status" -ne 0 ]; then
+            local _t_label
+            _t_label=$(_transplant_label "$transplant_from")
             carry=""
             helper_status=0
             if [ -n "$previous_id" ] && [ -z "$outside_id" ]; then
-                printf 'cs: could not carry the Claude conversation over; resuming the earlier Codex conversation.\n' >&2
+                printf 'cs: could not carry the %s conversation over; resuming the earlier Codex conversation.\n' "$_t_label" >&2
                 intent=auto
                 recorded_id="$previous_id"
                 cs_run_child "$helper" --codex-bin "$codex_bin" --cwd "$session_dir" \
                     --instructions-file "$context_file" --thread-id "$recorded_id" > "$prepared_file" || helper_status=$?
             else
-                printf 'cs: could not carry the Claude conversation over; starting a fresh Codex conversation.\n' >&2
+                printf 'cs: could not carry the %s conversation over; starting a fresh Codex conversation.\n' "$_t_label" >&2
                 cs_run_child "$helper" --codex-bin "$codex_bin" --cwd "$session_dir" \
                     --instructions-file "$context_file" > "$prepared_file" || helper_status=$?
             fi
@@ -667,7 +689,7 @@ _launch_codex_bound() {
         [ -z "$rotation_handoff" ] || stage_reason=handoff
         if [ -n "$carry" ]; then
             stage_reason=transplant
-            carried_from="claude:$transplant_id"
+            carried_from="$transplant_from:$transplant_id"
             start_source=transplant
         fi
         # An encrypted session's handoff name is its topic, so it stays out of
@@ -685,8 +707,8 @@ _launch_codex_bound() {
             return 1
         fi
         if [ -n "$carry" ]; then
-            printf "${DIM}Carried over the Claude conversation:${NC} %s ${DIM}(%s)${NC}\n" \
-                "${transplant_id:0:8}" "$transplant_size"
+            printf "${DIM}Carried over the %s conversation:${NC} %s ${DIM}(%s)${NC}\n" \
+                "$(_transplant_label "$transplant_from")" "${transplant_id:0:8}" "$transplant_size"
             # codex resume opens the earlier thread outside cs: the binding
             # stays on the carried one.
             [ -z "$previous_id" ] || [ -n "$outside_id" ] \

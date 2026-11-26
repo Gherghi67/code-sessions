@@ -63,6 +63,21 @@ _cs_run_mail_staged_base() {
         </dev/null >/dev/null 2>&1
 }
 
+# The exporter can leave a partial file inside the preview directory. Remove
+# only the directory this run made and its separately staged vault payload.
+_cs_run_cleanup_carry() {
+    if [ -n "${_cs_run_carry_preview_dir:-}" ] && [ -n "${_cs_run_carry_preview_id:-}" ] \
+        && [ ! -L "$_cs_run_carry_preview_dir" ] \
+        && [ "$(cs_dir_identity "$_cs_run_carry_preview_dir")" = "$_cs_run_carry_preview_id" ]; then
+        rm -rf -- "$_cs_run_carry_preview_dir" 2>/dev/null || true
+    fi
+    if [ -n "${_cs_run_carry_vault_file:-}" ] && [ -n "${_cs_run_carry_vault_parent_id:-}" ] \
+        && [ "$(cs_dir_identity "${_cs_run_carry_vault_file%/*}")" = "$_cs_run_carry_vault_parent_id" ]; then
+        rm -f -- "$_cs_run_carry_vault_file" 2>/dev/null || true
+    fi
+    _cs_run_carry_preview_dir="" _cs_run_carry_vault_file=""
+}
+
 _cs_run_cleanup() {
     [ "${_cs_run_active:-0}" = 1 ] || return 0
     _cs_run_stop_helper
@@ -78,6 +93,7 @@ _cs_run_cleanup() {
         wait "$_cs_run_child_pid" 2>/dev/null || true
         _cs_run_child_pid=""
     fi
+    _cs_run_cleanup_carry
     [ -z "${_cs_run_gate:-}" ] || rm -f "$_cs_run_gate" 2>/dev/null || true
     release_session_lock "$_cs_run_meta" || true
     _cs_run_mail_staged_base || true
@@ -179,6 +195,9 @@ cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent, 
     [ -z "$remote_mode" ] || [ "$engine" = claude ] || { printf 'Error: --remote requires --engine claude\n' >&2; return 1; }
     local _cs_run_meta="$directory/.cs" _cs_run_active=0 _cs_run_child_pid="" _cs_run_gate="" _cs_run_helper_pid=""
     local _cs_run_helper_dir="" _cs_run_name="$name"
+    local _cs_run_skip_engine_record=""
+    local _cs_run_carry_preview_dir="" _cs_run_carry_preview_id=""
+    local _cs_run_carry_vault_file="" _cs_run_carry_vault_parent_id=""
     local saved_exit saved_int saved_term
     local CS_RUN_ID CS_RUN_ENGINE="$engine" CS_RUN_OWNER_PID="$$" CS_LEAD_PID="$$"
     CS_RUN_ID=$(_alloc_uuid) || return 1
@@ -217,7 +236,7 @@ cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent, 
     if [ "$status" -eq 0 ]; then
         cs_engine_call "$engine" launch "$name" "$directory" "$is_new" "$force" "$merge" "$intent" "$remote_mode" || status=$?
     fi
-    if [ "$status" -eq 0 ]; then
+    if [ "$status" -eq 0 ] && [ -z "$_cs_run_skip_engine_record" ]; then
         cs_run_with_lease "$_cs_run_meta" _cs_set_local_state_unlocked "$_cs_run_meta/local/state" engine "$engine" || status=$?
     fi
     if declare -F _switch_settle >/dev/null; then

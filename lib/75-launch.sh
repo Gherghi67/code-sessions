@@ -737,40 +737,52 @@ _claude_transplant_version() {
     return 0
 }
 
-# Offered when the session's newer conversation is Codex's (lib/47-transplant.sh).
-# The thread is converted before the question, so an empty or unreadable one is
-# never offered: the latter is named in one dim line and the usual question
-# follows. Sets the caller's transplant_from, transplant_id, transplant_size,
-# transplant_uuid and transplant_file (the converted transcript). It waits for
-# the answer in Claude Code's projects dir, beside the conversation it would
-# become, never in the session's agent-writable .cs/local; its dot name
-# without .jsonl keeps Claude Code and discovery from listing it.
+# Offered when the session's newer conversation is Codex's or Antigravity's
+# (lib/47-transplant.sh). The conversation is converted before the question, so
+# an empty or unreadable one is never offered: the latter is named in one dim
+# line and the usual question follows. Sets the caller's transplant_from,
+# transplant_id, transplant_size, transplant_uuid and transplant_file (the
+# converted transcript). It waits for the answer in Claude Code's projects dir,
+# beside the conversation it would become, never in the session's agent-writable
+# .cs/local; its dot name without .jsonl keeps Claude Code and discovery from
+# listing it.
 _claude_transplant_prepare() {  # session_dir
-    local session_dir="$1" source helper stats cwd branch proj file uuid
+    local session_dir="$1" source from src_id helper stats cwd branch proj file uuid agy_home
+    local -a src_args=()
     proj=$(_claude_project_dir "$session_dir")
     # A conversion an interrupted launch left behind is never placed.
     rm -f "$proj"/.cs-transplant-* 2>/dev/null || true
     source=$(_transplant_source "$session_dir" claude) || return 0
+    from=${source%% *}
+    src_id=${source#* }
     helper=$(_codex_thread_helper 2>/dev/null) && [ -x "$helper" ] || return 0
+    case "$from" in
+        codex) src_args=(--thread-id "$src_id") ;;
+        antigravity)
+            agy_home=$(_transplant_antigravity_home "$session_dir") || return 0
+            src_args=(--from-antigravity "$src_id" --antigravity-home "$agy_home")
+            ;;
+        *) return 0 ;;
+    esac
     uuid=$(_alloc_uuid) || return 0
     cwd=$(cd -- "$session_dir" 2>/dev/null && pwd -P) || return 0
     branch=$(git -C "$session_dir" branch --show-current 2>/dev/null) || branch=""
     # Made before the answer, so made the way Claude Code makes it: private.
     (umask 077 && mkdir -p "$proj") || return 0
     file="$proj/.cs-transplant-$uuid"
-    if ! stats=$("$helper" --export-claude --thread-id "${source#* }" --session-id "$uuid" \
+    if ! stats=$("$helper" --export-claude "${src_args[@]}" --session-id "$uuid" \
         --cwd "$cwd" --out "$file" --claude-version "$(_claude_transplant_version)" \
         --git-branch="$branch" 2>&1); then
         rm -f "$file"
-        _transplant_unreadable codex "$stats"
+        _transplant_unreadable "$from" "$stats"
         return 0
     fi
     if [ "$(_transplant_count "$stats")" -lt 1 ] || [ ! -f "$file" ]; then
         rm -f "$file"
         return 0
     fi
-    transplant_from=codex
-    transplant_id=${source#* }
+    transplant_from=$from
+    transplant_id=$src_id
     transplant_size=$(_transplant_size "$stats")
     transplant_uuid=$uuid
     transplant_file=$file
