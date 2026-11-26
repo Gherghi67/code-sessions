@@ -81,6 +81,12 @@ _narrative_rel() {  # session_dir
     (cd "$1" && ls .cs/memory/narrative.*.md)
 }
 
+_worktree_test_set_engine() {  # session_dir, engine
+    local state="$1/.cs/local/state"
+    { grep -v '^engine:' "$state" || true; printf 'engine: %s\n' "$2"; } > "$state.new" \
+        && mv "$state.new" "$state"
+}
+
 # A conversation's SessionStart or SessionEnd hook, as the lead of the session
 # at <dir>, with the built cs on PATH.
 _session_hook() {  # start|end session_dir session_name conversation_id
@@ -3420,12 +3426,13 @@ test_integrate_refuses_a_landing_that_overwrites_base_session_records() {
     printf -- '- the narrative, rewritten\n' > "$base_dir/$narrative"
     cp "$base_dir/$narrative" "$TEST_TMPDIR/narrative"
     head=$(git -C "$base_dir" rev-parse HEAD)
+    _worktree_test_set_engine "$base_dir" codex || return 1
     output=$("$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- sh -c 'echo ran > "$0"' "$TEST_TMPDIR/gate-ran" 2>&1) || status=$?
     assert_eq "1" "$status" "the integrate refuses: $output" || return 1
     assert_eq "Error: Uncommitted changes in $base_dir are on paths the feature also changes, and landing would overwrite them; base untouched. Paths:
 $readme
 $narrative
-Commit them in $base_dir (cs leaves session records for you to commit), then re-run /finish fix-auth" "$output" "the refusal names both paths" || return 1
+Commit them in $base_dir (cs leaves session records for you to commit), then re-run \$finish fix-auth" "$output" "the refusal names both paths and Codex's command" || return 1
     assert_not_exists "$TEST_TMPDIR/gate-ran" "no gate ran" || return 1
     assert_eq "$head" "$(git -C "$base_dir" rev-parse HEAD)" "base HEAD unchanged" || return 1
     assert_eq "$line" "$(tail -n 1 "$base_dir/$readme")" "the base's uncommitted README line is still there" || return 1
@@ -3447,11 +3454,12 @@ test_integrate_rechecks_session_records_the_gate_dirtied() {
     (cd "$wt" && git add "$readme" && git commit -q -m "feature README")
     sha=$(git -C "$wt" rev-parse HEAD)
     head=$(git -C "$base_dir" rev-parse HEAD)
+    _worktree_test_set_engine "$base_dir" antigravity || return 1
     output=$("$CS_BIN" proja -integrate-feature fix-auth "$sha" -- sh -c 'echo "the gate was here" >> "$0"' "$base_dir/$readme" 2>&1) || status=$?
     assert_eq "1" "$status" "the integrate refuses: $output" || return 1
     assert_eq "Error: Base $base_dir changed during the gates on paths the feature also changes; base untouched at $head. Paths:
 $readme
-Commit them in $base_dir (cs leaves session records for you to commit), then re-run /finish fix-auth" "$output" "the refusal names the path the gate wrote" || return 1
+Commit them in $base_dir (cs leaves session records for you to commit), then re-run /cs:finish fix-auth" "$output" "the refusal names the path the gate wrote and Antigravity's command" || return 1
     assert_eq "$head" "$(git -C "$base_dir" rev-parse HEAD)" "base HEAD unchanged" || return 1
 
     base_dir=$(_tracked_base projb) || { echo "  FAIL: fixture: the second base tracks its narrative"; return 1; }
@@ -6120,9 +6128,10 @@ test_retire_tracked_mode_leaves_no_copy_when_the_trash_command_fails() {
     sha=$(land_feature myproj fix-auth) || { echo "  FAIL: integrate fixture"; return 1; }
     echo "KEY=value" > "$wt/.env"
     bin=$(fake_trash_bin fails trash)
+    _worktree_test_set_engine "$base_dir" codex || return 1
     output=$(PATH="$bin:$PATH" "$CS_BIN" myproj -retire-feature fix-auth "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
-    assert_eq "Error: Could not move 1 ignored file to the system trash, so nothing was removed; anything the trash command did move is in the trash. Move or delete it, then run /finish fix-auth here again:
+    assert_eq "Error: Could not move 1 ignored file to the system trash, so nothing was removed; anything the trash command did move is in the trash. Move or delete it, then run \$finish fix-auth here again:
     .env
 trash: trash: the items could not be moved (stand-in failure)" "$output" "the refusal names the file and the trash command's error" || return 1
     assert_eq "" "$(find "$CS_SESSIONS_ROOT" -maxdepth 1 -name '.retire-*')" "no copy of the records is left behind" || return 1
@@ -6158,12 +6167,14 @@ test_retire_tracked_mode_refuses_what_the_fuse_cannot_carry() {
 .cs/memory/topic.md" ;;
             rewritten)
                 printf '{"event":"rewritten"}\n' > "$wt/.cs/timeline.jsonl"
-                expected="Error: The feature changes lines its last commit holds in a session record cs only appends to, so the record fuse cannot carry the change into $base_dir/.cs. Nothing was removed. Commit the change on cs/fix-auth, or put those lines back, then run /finish fix-auth again:
+                _worktree_test_set_engine "$base_dir" codex || return 1
+                expected="Error: The feature changes lines its last commit holds in a session record cs only appends to, so the record fuse cannot carry the change into $base_dir/.cs. Nothing was removed. Commit the change on cs/fix-auth, or put those lines back, then run \$finish fix-auth again:
 .cs/timeline.jsonl" ;;
             both-edited)
                 echo "the feature's edit" >> "$wt/.cs/memory/topic.md"
                 echo "the base's edit" >> "$base_dir/.cs/memory/topic.md"
-                expected="Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link, a repository or a file that changed type. Nothing was removed. Commit each on cs/fix-auth, or merge it into $base_dir/.cs by hand and undo it in $wt, then run /finish fix-auth again:
+                _worktree_test_set_engine "$base_dir" antigravity || return 1
+                expected="Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link, a repository or a file that changed type. Nothing was removed. Commit each on cs/fix-auth, or merge it into $base_dir/.cs by hand and undo it in $wt, then run /cs:finish fix-auth again:
 .cs/memory/topic.md" ;;
         esac
         line=$("$CS_BIN" myproj -features --porcelain 2>&1)

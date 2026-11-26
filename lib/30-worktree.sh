@@ -1291,8 +1291,8 @@ _finish_command() {  # session_dir, [session_name]
 # removed nothing, when no trash command is installed or its first call
 # fails; when a later call fails, refuses naming what the earlier calls
 # moved.
-_retire_trash_ignored_work() {  # wt_dir task base_dir
-    local wt_dir="$1" task="$2" base_dir="$3" ignored trash_paths regenerable marked held input entries listing count them=them nl=$'\n'
+_retire_trash_ignored_work() {  # wt_dir task base_dir fin
+    local wt_dir="$1" task="$2" base_dir="$3" fin="$4" ignored trash_paths regenerable marked held input entries listing count them=them nl=$'\n'
     ignored=$(_worktree_others "$wt_dir" --ignored) \
         || error "Could not list the ignored files in $wt_dir; nothing was removed"
     [ -n "$ignored" ] || return 0
@@ -1314,7 +1314,7 @@ _retire_trash_ignored_work() {  # wt_dir task base_dir
     local word entry name
     while IFS= read -r word; do trash_cmd+=("$word"); done <<< "$(_system_trash_command)"
     [ -n "${trash_cmd[0]:-}" ] \
-        || error "Worktree has ${count% *} ignored ${count#* } that retiring moves to the system trash, but neither trash nor gio is installed, so nothing was removed. Move or delete $them, then run /finish $task here again:
+        || error "Worktree has ${count% *} ignored ${count#* } that retiring moves to the system trash, but neither trash nor gio is installed, so nothing was removed. Move or delete $them, then run $fin $task here again:
 ${listing#*"$nl"}"
     # An entry is a line of _names_as_lines: the trash command gets the name
     # it stands for, as it is on disk.
@@ -1334,7 +1334,7 @@ ${listing#*"$nl"}"
     while IFS= read -r size; do
         if ! trash_err=$("${trash_cmd[@]}" "${targets[@]:first:size}" 2>&1 >/dev/null); then
             [ "$first" -gt 0 ] \
-                || error "Could not move ${count% *} ignored ${count#* } to the system trash, so nothing was removed; anything the trash command did move is in the trash. Move or delete $them, then run /finish $task here again:
+                || error "Could not move ${count% *} ignored ${count#* } to the system trash, so nothing was removed; anything the trash command did move is in the trash. Move or delete $them, then run $fin $task here again:
 ${listing#*"$nl"}
 ${trash_cmd[0]}: ${trash_err:-exited with an error}"
             _retire_trashed_set "$wt_dir" "$(printf '%s\n' "$entries" | awk -v moved="$first" 'NR <= moved')"
@@ -1342,7 +1342,7 @@ ${trash_cmd[0]}: ${trash_err:-exited with an error}"
             count="${listing%%"$nl"*}"
             them=them
             [ "$count" != "1 file" ] || them=it
-            error "Could not move ${count% *} ignored ${count#* } to the system trash, so the worktree was not removed; anything the trash command did move is in the trash. Move or delete $them, then run /finish $task here again:
+            error "Could not move ${count% *} ignored ${count#* } to the system trash, so the worktree was not removed; anything the trash command did move is in the trash. Move or delete $them, then run $fin $task here again:
 ${listing#*"$nl"}
 ${trash_cmd[0]}: ${trash_err:-exited with an error}
 $(_retire_trashed_note " before this failed")"
@@ -1576,7 +1576,7 @@ $hidden"
     mode=$(_read_local_state "$wt_dir/.cs/local/state" cs_mode)
     case "$mode" in
         tracked|ignored) ;;
-        *) error "$wt_dir/.cs/local/state names no cs_mode, so cs cannot tell whether git or the record fuse carries $wt_dir/.cs; nothing was removed. Add the line 'cs_mode: tracked' if git tracks .cs in $base_name, else 'cs_mode: ignored', then run /finish $task again." ;;
+        *) error "$wt_dir/.cs/local/state names no cs_mode, so cs cannot tell whether git or the record fuse carries $wt_dir/.cs; nothing was removed. Add the line 'cs_mode: tracked' if git tracks .cs in $base_name, else 'cs_mode: ignored', then run $fin $task again." ;;
     esac
     local wt_untracked
     wt_untracked=$(_worktree_untracked_at_risk "$wt_dir") \
@@ -1610,7 +1610,7 @@ ${wt_listing#*"$nl"}"
             "vault-locked "*) error "cannot fuse the worktree's records: $base_dir/.cs/${conflicts#vault-locked } is locked. Mount it, then retry." ;;
         esac
     fi
-    refusal=$(printf '%s\n' "$conflicts" | _record_refusal_message "$wt_dir" "$base_dir" "$task" "$mode")
+    refusal=$(printf '%s\n' "$conflicts" | _record_refusal_message "$wt_dir" "$base_dir" "$task" "$mode" "$fin")
     [ -z "$refusal" ] || error "$refusal"
     # Session records the base left uncommitted are no reason to refuse
     # (_project_tree_is_dirty): in tracked mode the integrate that just landed
@@ -1647,14 +1647,14 @@ ${wt_listing#*"$nl"}"
     _permission_rules_carried "$wt_dir" "$base_dir" || carried=$?
     if [ "$carried" = 3 ]; then
         [ ! -L "$wt_dir/.claude/settings.local.json" ] \
-            || error "$wt_dir/.claude/settings.local.json is a link, and cs reads the feature's permission rules only from a file of its own. Nothing was removed. Put the rules in a file there, or delete the link, then run /finish $task again."
-        error "$wt_dir/.claude is a link cs cannot follow to a directory inside $wt_dir, and cs reads the feature's permission rules only from a file inside it. Nothing was removed. Replace the link with a directory of the feature's own, or remove it, and commit that, then run /finish $task again."
+            || error "$wt_dir/.claude/settings.local.json is a link, and cs reads the feature's permission rules only from a file of its own. Nothing was removed. Put the rules in a file there, or delete the link, then run $fin $task again."
+        error "$wt_dir/.claude is a link cs cannot follow to a directory inside $wt_dir, and cs reads the feature's permission rules only from a file inside it. Nothing was removed. Replace the link with a directory of the feature's own, or remove it, and commit that, then run $fin $task again."
     fi
     if [ "$carried" = 2 ]; then
         local link missing
         link=$(_settings_link "$base_dir")
         _settings_rules_readable "$wt_dir/.claude/settings.local.json" \
-            || error "$wt_dir/.claude/settings.local.json is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot list the feature's permission rules that $link, a link, does not take. Nothing was removed. Fix it, then run /finish $task again."
+            || error "$wt_dir/.claude/settings.local.json is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot list the feature's permission rules that $link, a link, does not take. Nothing was removed. Fix it, then run $fin $task again."
         missing=$(_settings_rules_missing "$base_dir/.claude/settings.local.json" "$wt_dir/.claude/settings.local.json") \
             || error "Could not list the feature's permission rules that $link, a link, does not take; nothing was removed"
         [ -z "$missing" ] \
@@ -1663,7 +1663,7 @@ $missing"
     elif [ "$carried" = 0 ]; then
         for settings in "$wt_dir/.claude/settings.local.json" "$base_dir/.claude/settings.local.json"; do
             _settings_rules_readable "$settings" \
-                || error "$settings is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot add the feature's permission rules to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish $task again."
+                || error "$settings is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot add the feature's permission rules to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run $fin $task again."
         done
         _carry_permission_rules "$wt_dir" "$base_dir" \
             || error "Could not add the feature's permission rules to $base_dir/.claude/settings.local.json; nothing was removed"
@@ -1675,7 +1675,7 @@ $missing"
         # anything else is a .cs/private that is no directory at all, which
         # no mount fixes.
         [ -L "$base_dir/.cs/private" ] \
-            || error "cannot fuse the worktree's records: $base_dir/.cs/private is not a directory. Nothing was removed. Move it out of $base_dir/.cs, then run /finish $task again."
+            || error "cannot fuse the worktree's records: $base_dir/.cs/private is not a directory. Nothing was removed. Move it out of $base_dir/.cs, then run $fin $task again."
         error "cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry."
     fi
     # The removal below runs under the feature's openers' mutex, from the
@@ -1710,11 +1710,11 @@ $missing"
         if [ "$captured" != 0 ]; then
             _cs_unlock "$wt_dir/.cs/session.mutex.lock"
             [ "$captured" != 2 ] \
-                || error "The feature's session records changed after cs checked them, so nothing was removed. Run /finish $task again."
+                || error "The feature's session records changed after cs checked them, so nothing was removed. Run $fin $task again."
             error "Could not copy the session records of $wt_dir; nothing was removed"
         fi
     fi
-    _retire_trash_ignored_work "$wt_dir" "$task" "$base_dir"
+    _retire_trash_ignored_work "$wt_dir" "$task" "$base_dir" "$fin"
     local trashed nl=$'\n'
     trashed=$(_retire_trashed_note " before this failed")
     if [ "$mode" = "ignored" ]; then
@@ -1736,7 +1736,7 @@ $missing"
             # The records moved out before the removal began, so $aside/cs
             # holds every one; what is left of the worktree takes none back,
             # since no /finish fuses from there again.
-            error "git worktree remove failed for $wt_dir after deleting part of it, and what is left is no git checkout, so /finish $task cannot run again. The feature's session records are all at $aside/cs, where cs set them aside before the removal, and the base's records are as they were. Fuse into $base_dir/.cs by hand what $aside/cs holds and $lacks, then delete $aside and what is left of $wt_dir. $by_hand
+            error "git worktree remove failed for $wt_dir after deleting part of it, and what is left is no git checkout, so $fin $task cannot run again. The feature's session records are all at $aside/cs, where cs set them aside before the removal, and the base's records are as they were. Fuse into $base_dir/.cs by hand what $aside/cs holds and $lacks, then delete $aside and what is left of $wt_dir. $by_hand
 $remove_err${trashed:+$nl$trashed}"
         elif [ "$mode" = "ignored" ]; then
             mv "$aside/cs" "$wt_dir/.cs" \
@@ -1750,7 +1750,7 @@ $remove_err${trashed:+$nl$trashed}"
             # still holds reaches the base by hand or not at all.
             local held="$aside/cs holds"
             [ ! -d "$wt_dir/.cs" ] || held="$aside/cs or $wt_dir/.cs holds"
-            error "git worktree remove failed for $wt_dir after deleting part of it, and what is left is no git checkout, so /finish $task cannot run again and cs cannot tell which of the session records the feature left uncommitted are still there. The copy cs made of them is at $aside/cs, and the base's records are as they were. Fuse into $base_dir/.cs by hand what $held and $lacks, then delete $aside and what is left of $wt_dir. $by_hand
+            error "git worktree remove failed for $wt_dir after deleting part of it, and what is left is no git checkout, so $fin $task cannot run again and cs cannot tell which of the session records the feature left uncommitted are still there. The copy cs made of them is at $aside/cs, and the base's records are as they were. Fuse into $base_dir/.cs by hand what $held and $lacks, then delete $aside and what is left of $wt_dir. $by_hand
 $remove_err${trashed:+$nl$trashed}"
         else
             local spare=0 known="the worktree no longer holds every session record the feature left uncommitted"
@@ -1759,7 +1759,7 @@ $remove_err${trashed:+$nl$trashed}"
             # git deletes what it can before it fails, so the copy can be
             # the only one of a record by now.
             [ "$spare" = 0 ] \
-                || error "git worktree remove failed for $wt_dir after deleting part of it, and $known. The copy cs made of them is at $aside/cs, and the base's records are as they were. Fuse into $base_dir/.cs by hand what $aside/cs holds and neither $base_dir/.cs nor $wt_dir/.cs does, $(_hand_fuse_rules "$base_dir" "$task"), then delete $aside. Then put back any tracked file the removal deleted, which leaves every other file as it is, and run /finish $task again: git -C \"$wt_dir\" ls-files -z --deleted | xargs -0 git -C \"$wt_dir\" checkout --
+                || error "git worktree remove failed for $wt_dir after deleting part of it, and $known. The copy cs made of them is at $aside/cs, and the base's records are as they were. Fuse into $base_dir/.cs by hand what $aside/cs holds and neither $base_dir/.cs nor $wt_dir/.cs does, $(_hand_fuse_rules "$base_dir" "$task"), then delete $aside. Then put back any tracked file the removal deleted, which leaves every other file as it is, and run $fin $task again: git -C \"$wt_dir\" ls-files -z --deleted | xargs -0 git -C \"$wt_dir\" checkout --
 $remove_err${trashed:+$nl$trashed}"
             rm -rf "$aside"
         fi
@@ -1767,7 +1767,7 @@ $remove_err${trashed:+$nl$trashed}"
         # refusing over them.
         local deleted
         if ! deleted=$(git -C "$wt_dir" ls-files --deleted 2>/dev/null) || [ -n "$deleted" ]; then
-            error "git worktree remove failed for $wt_dir after deleting part of it. $kept, and the base's records are as they were. Put back any tracked file the removal deleted, which leaves every other file as it is, and run /finish $task again: git -C \"$wt_dir\" ls-files -z --deleted | xargs -0 git -C \"$wt_dir\" checkout --
+            error "git worktree remove failed for $wt_dir after deleting part of it. $kept, and the base's records are as they were. Put back any tracked file the removal deleted, which leaves every other file as it is, and run $fin $task again: git -C \"$wt_dir\" ls-files -z --deleted | xargs -0 git -C \"$wt_dir\" checkout --
 $remove_err${trashed:+$nl$trashed}"
         fi
         error "git worktree remove failed for $wt_dir; nothing was fused or deleted
@@ -2499,7 +2499,7 @@ Move or delete these untracked files in $base_dir, then re-run $fin $task"
         rmdir "$no_hooks"
         error "Uncommitted changes in $base_dir are on paths the feature also changes, and landing would overwrite them; base untouched. Paths:
 $changed
-Commit them in $base_dir (cs leaves session records for you to commit), then re-run /finish $task"
+Commit them in $base_dir (cs leaves session records for you to commit), then re-run $fin $task"
     fi
     # Submodules after the merge, so the gates see the MERGED gitlinks: a
     # feature that adds or bumps a submodule is otherwise gated against
@@ -2599,7 +2599,7 @@ Commit the generated output on the feature branch, then re-run $fin $task"
     if [ -n "$refused" ]; then
         error "Base $base_dir changed during the gates on paths the feature also changes; base untouched at $B. Paths:
 $refused
-Commit them in $base_dir (cs leaves session records for you to commit), then re-run /finish $task"
+Commit them in $base_dir (cs leaves session records for you to commit), then re-run $fin $task"
     fi
     # Fast-forward BEFORE removing the temp: until then the merge commit is
     # reachable only from the temp's detached HEAD.
@@ -3049,8 +3049,8 @@ _plan_refusal_lines() {  # plan_file
 # verdict, each over its own list, and the first says nothing was removed.
 # <mode> is the feature's cs_mode: a tracked feature can commit a record to
 # carry it, an ignored one can only merge it by hand or delete it.
-_record_refusal_message() {  # wt_dir base_dir task mode
-    local wt_dir="$1" base_dir="$2" task="$3" mode="$4"
+_record_refusal_message() {  # wt_dir base_dir task mode fin
+    local wt_dir="$1" base_dir="$2" task="$3" mode="$4" fin="$5"
     local entry deleted="" rewritten="" merge="" blocked="" refusal="" removed="Nothing was removed. " nl=$'\n'
     while IFS= read -r entry; do
         case "$entry" in
@@ -3061,21 +3061,21 @@ _record_refusal_message() {  # wt_dir base_dir task mode
         esac
     done
     if [ -n "$deleted" ]; then
-        refusal="The feature deletes session records git tracks, and the record fuse carries additions and edits only. ${removed}Restore each with git -C \"$wt_dir\" checkout HEAD -- <path>, or commit the deletion on cs/$task, then run /finish $task again:
+        refusal="The feature deletes session records git tracks, and the record fuse carries additions and edits only. ${removed}Restore each with git -C \"$wt_dir\" checkout HEAD -- <path>, or commit the deletion on cs/$task, then run $fin $task again:
 $deleted"
         removed=""
     fi
     if [ -n "$rewritten" ]; then
-        refusal="$refusal${refusal:+$nl}The feature changes lines its last commit holds in a session record cs only appends to, so the record fuse cannot carry the change into $base_dir/.cs. ${removed}Commit the change on cs/$task, or put those lines back, then run /finish $task again:
+        refusal="$refusal${refusal:+$nl}The feature changes lines its last commit holds in a session record cs only appends to, so the record fuse cannot carry the change into $base_dir/.cs. ${removed}Commit the change on cs/$task, or put those lines back, then run $fin $task again:
 $rewritten"
         removed=""
     fi
     if [ -n "$merge" ] && [ "$mode" = "ignored" ]; then
-        refusal="$refusal${refusal:+$nl}The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link or a repository. ${removed}Merge each into $base_dir/.cs by hand, or delete it from $wt_dir/.cs, then run /finish $task again:
+        refusal="$refusal${refusal:+$nl}The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link or a repository. ${removed}Merge each into $base_dir/.cs by hand, or delete it from $wt_dir/.cs, then run $fin $task again:
 $merge"
         removed=""
     elif [ -n "$merge" ]; then
-        refusal="$refusal${refusal:+$nl}The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link, a repository or a file that changed type. ${removed}Commit each on cs/$task, or merge it into $base_dir/.cs by hand and undo it in $wt_dir, then run /finish $task again:
+        refusal="$refusal${refusal:+$nl}The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link, a repository or a file that changed type. ${removed}Commit each on cs/$task, or merge it into $base_dir/.cs by hand and undo it in $wt_dir, then run $fin $task again:
 $merge"
         removed=""
     fi
@@ -3084,8 +3084,8 @@ $merge"
     # The dispatch refuses a task name cs does not accept before the
     # retire, so here the path is what blocks them.
     if [ -n "$blocked" ]; then
-        local remedy="Move that aside, or delete each from $wt_dir/.cs, then run /finish $task again:"
-        [ "$mode" = "ignored" ] || remedy="Move that aside, then run /finish $task again:"
+        local remedy="Move that aside, or delete each from $wt_dir/.cs, then run $fin $task again:"
+        [ "$mode" = "ignored" ] || remedy="Move that aside, then run $fin $task again:"
         refusal="$refusal${refusal:+$nl}The feature's own README and summary go to $base_dir/.cs/features/$task/, and cs cannot make that directory: the base holds a file, a dangling link or a link out of the session on the way to it. ${removed}$remedy
 $blocked"
     fi
