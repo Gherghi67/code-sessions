@@ -1336,6 +1336,40 @@ _vault_projects() {  # name -> the folder in the vault where the session's claud
     printf '%s/.cs/vault-mnt/claude-config/projects/%s' "$CS_SESSIONS_ROOT/$1" "$(_encode_cwd_for_claude_test "$CS_SESSIONS_ROOT/$1")"
 }
 
+test_open_moves_plaintext_transcripts_from_the_fork_profile() {
+    _encrypted_session enc || return 1
+    local profile="$TEST_TMPDIR/profile" id=44444444-4444-4444-8444-444444444444 plain default out
+    plain=$(CS_TRANSCRIPTS_DIR="$profile/.claude/projects" _plain_conversation enc "$id" "fork profile transcript")
+    default=$(CS_TRANSCRIPTS_DIR="$HOME/.claude/projects" _plain_conversation enc "$id" "default profile transcript")
+    out=$(
+        unset CS_TRANSCRIPTS_DIR
+        CODE_SESSIONS_HOME="$profile" CLAUDE_CONFIG_DIR="$TEST_TMPDIR/other/.cs/claude-config" \
+            CLAUDE_SECURESTORAGE_CONFIG_DIR="" _open enc "${VAULT_PW_LINE}n
+" 2>&1
+    ) || { printf '%s\n' "$out"; return 1; }
+    assert_file_contains "$(_vault_projects enc)/$id.jsonl" "fork profile transcript" "reopen moves the fork profile into the vault" || return 1
+    assert_not_exists "$plain/$id.jsonl" "the fork profile's plaintext copy is removed" || return 1
+    assert_file_contains "$default/$id.jsonl" "default profile transcript" "the default profile retains its transcript"
+}
+
+test_wrapper_reopens_a_vault_using_the_custom_claude_profile() {
+    local legacy="$HOME/.local/share/code-sessions/home" custom="$HOME/custom Claude"
+    local id=44444444-4444-4444-8444-444444444444 plain default out
+    local CS_SESSIONS_ROOT="$legacy/sessions" CS_DATA_DIR="$legacy/.local/share/cs"
+    export CS_SESSIONS_ROOT CS_DATA_DIR
+    mkdir -p "$CS_SESSIONS_ROOT" "$HOME/.local/bin"
+    ln -s "$CS_BIN" "$HOME/.local/bin/cs"
+    _encrypted_session enc || return 1
+    plain=$(CS_TRANSCRIPTS_DIR="$custom/projects" _plain_conversation enc "$id" "custom profile transcript")
+    default=$(CS_TRANSCRIPTS_DIR="$HOME/.claude/projects" _plain_conversation enc "$id" "default profile transcript")
+    out=$(printf '%sn\n' "$VAULT_PW_LINE" | FAKE_MOUNT_FLAG="$TEST_TMPDIR/mounted" CS_ASSUME_TTY=1 \
+        CLAUDE_CONFIG_DIR="$legacy/sessions/other/.cs/claude-config" CLAUDE_SECURESTORAGE_CONFIG_DIR="$custom" \
+        "$SCRIPT_DIR/../scripts/code-sessions-profile.sh" enc 2>&1) || { printf '%s\n' "$out"; return 1; }
+    assert_file_contains "$(_vault_projects enc)/$id.jsonl" "custom profile transcript" "the wrapper moves the custom profile into the vault" || return 1
+    assert_not_exists "$plain/$id.jsonl" "the custom profile's plaintext copy is removed" || return 1
+    assert_file_contains "$default/$id.jsonl" "default profile transcript" "the default profile retains its transcript"
+}
+
 _claude_args() {  # -> a claude that writes its arguments, one a line, to $TEST_TMPDIR/claude-args
     local c="$TEST_TMPDIR/claude-args-stub"
     cat > "$c" <<EOF
@@ -2232,6 +2266,8 @@ run_test test_encrypt_refuses_an_existing_container_under_cs_data_dir
 run_test test_encrypt_refuses_a_relative_cs_data_dir
 run_test test_encrypt_builds_the_vault_and_detaches
 run_test test_encrypt_moves_claude_transcripts_from_the_fork_profile
+run_test test_open_moves_plaintext_transcripts_from_the_fork_profile
+run_test test_wrapper_reopens_a_vault_using_the_custom_claude_profile
 run_test test_encrypt_names_the_shared_codex_home_from_inside_a_vault
 run_test test_encrypt_removes_the_plaintext_codex_context
 run_test test_encrypt_removes_the_plaintext_antigravity_rule
