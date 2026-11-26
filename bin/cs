@@ -18882,6 +18882,9 @@ run_encrypt() {
     local name="$1" meta container mnt sub leftover taken=0 password="" again="" out transcripts moved move_rc=0 stayed=""
     _encrypt_refuse "$name"
     meta="$SESSIONS_ROOT/$name/.cs"
+    # This command owns a PID lock independently of the native run that
+    # launched it. Its EXIT trap must release that lock with the same identity.
+    unset CS_RUN_ID CS_RUN_ENGINE CS_RUN_OWNER_PID
     # Hold the session lock while the password prompts run, so an open in
     # another terminal meets the collision check instead of racing the moves.
     # It is taken as an open takes it, under the openers' mutex: when an open

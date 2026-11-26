@@ -655,6 +655,18 @@ test_encrypt_releases_the_session_lock_when_it_stops() {
     [ ! -e "$lock" ] || { echo "  FAIL: lock left after a failed encrypt: $(cat "$lock")"; return 1; }
 }
 
+test_encrypt_releases_its_lock_when_it_inherits_another_runs_environment() {
+    _stubs
+    _populated_session enc
+    local meta="$CS_SESSIONS_ROOT/enc/.cs" out
+    out=$(CS_RUN_ID=11111111-1111-4111-8111-111111111111 CS_RUN_ENGINE=claude \
+        CS_RUN_OWNER_PID="$$" FAKE_LOCK_WATCH="$meta/session.lock" _encrypt enc 2>&1) \
+        || { printf '%s\n' "$out"; return 1; }
+    assert_eq "live" "$(cat "$meta/session.lock.seen" 2>/dev/null)" "encrypt holds the lock while it works" || return 1
+    assert_not_exists "$meta/session.lock" "encrypt releases its lock" || return 1
+    assert_not_exists "$meta/local/run-lease.json" "encrypt leaves no lease for the other run"
+}
+
 # The EXIT trap releases the lock of whatever sessions root cs runs under: a
 # root holding a space, quotes and a $( is a path to release, never code to run.
 test_encrypt_releases_the_lock_under_a_root_with_quotes() {
@@ -2219,6 +2231,7 @@ run_test test_encrypt_builds_the_container_under_cs_data_dir
 run_test test_encrypt_prompt_follows_a_light_terminal
 run_test test_encrypt_holds_the_session_lock_while_it_works
 run_test test_encrypt_releases_the_session_lock_when_it_stops
+run_test test_encrypt_releases_its_lock_when_it_inherits_another_runs_environment
 run_test test_encrypt_releases_the_lock_under_a_root_with_quotes
 run_test test_encrypt_refuses_an_open_that_took_the_lock_after_its_check
 run_test test_encrypt_refuses_while_the_openers_mutex_stays_held
