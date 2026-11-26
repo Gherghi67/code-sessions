@@ -3756,22 +3756,25 @@ test_antigravity_carry_over_guards_no_turn_missing_hook_and_subagent() {
     output=$(AGY_NEW_ID="$old_id" "$CS_BIN" carry-guard --engine antigravity </dev/null 2>&1) || { echo "$output"; return 1; }
     dir=$(_session_dir carry-guard)
 
-    # Exiting before any turn warns and keeps the old binding.
+    # Exiting before any turn warns and keeps the old binding and source engine.
     _agy_write_claude_source "$dir" "$claude_id"
     output=$(AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" carry-guard --engine antigravity <<< "y" 2>&1) || { echo "$output"; return 1; }
     assert_output_contains "$output" "carried-over conversation was not loaded" "no-turn run warns" || return 1
     assert_eq "$old_id" "$(_binding carry-guard)" "no-turn run keeps earlier binding" || return 1
+    assert_file_contains "$dir/.cs/local/state" '^engine: claude$' "no-turn run keeps the source engine" || return 1
+    assert_eq 'engine: claude' "$(cat "$AGY_STATE")" "launch waits for the first model call to record Antigravity" || return 1
 
     # A subagent firing before the first typed turn cannot steal the carried steps.
-    _agy_write_claude_source "$dir" "$claude_id"
     : > "$AGY_HOOK_OUT"
     rm -f "$AGY_HOOK_OUT.before-subagent"
     output=$(AGY_BEFORE_CARRY_SUBAGENT=66666666-6666-4666-8666-666666666666 \
         AGY_NEW_ID=22222222-2222-4222-8222-222222222225 CS_ASSUME_TTY=1 \
         "$CS_BIN" carry-guard --engine antigravity <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "The newest conversation here is Claude's" "the next reopen offers the carry again" || return 1
     assert_file_not_contains "$AGY_HOOK_OUT.before-subagent" "COPPER-OWL" "subagent never receives carried steps" || return 1
     assert_file_contains "$AGY_HOOK_OUT" "COPPER-OWL" "main conversation still receives carried steps" || return 1
     assert_eq 22222222-2222-4222-8222-222222222225 "$(_binding carry-guard)" "main conversation takes the binding" || return 1
+    assert_file_contains "$dir/.cs/local/state" '^engine: antigravity$' "a bound carry marks Antigravity as the latest engine" || return 1
 
     # Missing cs plugin falls back to the usual reopen prompt with one dim line.
     rm -rf "$HOME/.gemini/config/plugins/cs"

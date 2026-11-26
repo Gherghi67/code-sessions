@@ -722,14 +722,6 @@ $prompt"
         _antigravity_exclude_rule "$session_dir" \
             || warn "could not add $CS_ANTIGRAVITY_RULE to the checkout's info/exclude; git status will list it"
     fi
-    # Recorded before agy starts, as Codex does, so cs commands run inside it
-    # (cs -doctor, the picker) see the engine the session now runs under.
-    cs_run_with_lease "$meta_dir" _cs_set_local_state_unlocked "$meta_dir/local/state" engine antigravity || {
-        [ -z "$transplant_file" ] || rm -f "$transplant_file"
-        _antigravity_launch_error "Could not record the session's engine in $meta_dir/local/state"
-        return 1
-    }
-
     # The binding comes from cs's hook, not from here: a run that ends before
     # its conversation reaches the model leaves the binding as it was, so the
     # next open never continues a conversation of another folder. A plugin
@@ -854,6 +846,13 @@ $prompt"
         fi
         warn "cs could not make a private directory under ${CS_CACHE_DIR:-$HOME/.cache/cs}/antigravity-runs: this run's conversation is recorded for a reopen only if the session has none yet."
     fi
+    # A staged carry leaves the source engine current until the hook binds
+    # the new conversation. Ordinary opens and carry fallbacks record agy
+    # before it starts, so cs commands inside it see the running engine.
+    if [ -z "$carry" ] && ! cs_run_with_lease "$meta_dir" _cs_set_local_state_unlocked "$meta_dir/local/state" engine antigravity; then
+        _antigravity_launch_error "Could not record the session's engine in $meta_dir/local/state"
+        return 1
+    fi
     # A seed cs -spawn staged: the shared consumer writes its brief into
     # .cs/brief.md and builds the kickoff, which goes in as agy's first
     # prompt. The seed is spent before agy starts, so the kickoff is sent at
@@ -972,6 +971,7 @@ $prompt"
         warn "The Antigravity handoff attempt needs recovery. Reopen with: cs $session_name --resume. If no consumer was recorded, inspect native agy history first; do not replay with --from-handoff."
     fi
     if [ -n "$carry" ] && [ -n "$run_dir" ] && [ ! -e "$run_dir/bound" ] && [ ! -L "$run_dir/bound" ]; then
+        _cs_run_skip_engine_record=1
         warn "cs saw no turn start in this run, so the carried-over conversation was not loaded and the Antigravity binding is unchanged."
     fi
     # The hook marks the run bound at its first model call. Without the mark
