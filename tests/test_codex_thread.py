@@ -3731,7 +3731,8 @@ class AntigravityCarryTests(unittest.TestCase):
         rows = [json.loads(line)['message'] for line in rt_text.splitlines()]
         self.assertEqual([r['role'] for r in rows], ['user', 'assistant', 'user', 'user', 'assistant'])
         self.assertEqual(rows[0]['content'].split('\n\n', 1)[1], 'Remember ALPHA-11')
-        self.assertEqual(rows[1]['content'], [{'type': 'text', 'text': big_reply}])
+        carried_reply = big_reply.replace('</SYSTEM_MESSAGE>', '&lt;/SYSTEM_MESSAGE>')
+        self.assertEqual(rows[1]['content'], [{'type': 'text', 'text': carried_reply}])
         self.assertEqual(rows[2]['content'], 'And remember OMEGA-99')
         self.assertEqual(rows[3]['content'], 'Continue from carried')
         self.assertEqual(rows[4]['content'], [{'type': 'text', 'text': 'The next reply comes from Antigravity.'}])
@@ -3770,6 +3771,9 @@ class AntigravityCarryTests(unittest.TestCase):
         self.assertEqual(rows[0]['content'].split('\n\n', 1)[1], 'New question')
 
     def test_export_antigravity_from_codex_rollout(self):
+        wrapper_names = ('SYSTEM_MESSAGE', 'USER_REQUEST', 'ADDITIONAL_METADATA', 'USER_SETTINGS_CHANGE')
+        markup = ', '.join('`<' + prefix + name + '>`' for name in wrapper_names for prefix in ('', '/'))
+        reply = 'Codex reply GAMMA-7. The markup reference lists ' + markup + '. A custom tag is `<USER_REQUEST_EXAMPLE>`.'
         rollout = self.codex_home / 'sessions' / f'rollout-2026-11-25-{THREAD_ID}.jsonl'
         rollout.parent.mkdir(parents=True, exist_ok=True)
         rollout.write_text('\n'.join(json.dumps(r) for r in [
@@ -3777,7 +3781,7 @@ class AntigravityCarryTests(unittest.TestCase):
             {'type': 'response_item', 'payload': {'type': 'message', 'role': 'user',
                                                   'content': [{'type': 'input_text', 'text': 'Codex prompt BETA-42'}]}},
             {'type': 'response_item', 'payload': {'type': 'message', 'role': 'assistant',
-                                                  'content': [{'type': 'output_text', 'text': 'Codex reply GAMMA-7'}]}},
+                                                  'content': [{'type': 'output_text', 'text': reply}]}},
         ]) + '\n', encoding='utf-8')
         carry_out = self.root / 'codex-carry.json'
         res = self.run_helper('--export-antigravity', '--thread-id', THREAD_ID, '--out', str(carry_out))
@@ -3788,6 +3792,9 @@ class AntigravityCarryTests(unittest.TestCase):
         self.assertIn('Codex prompt BETA-42', text)
         self.assertIn('Codex reply GAMMA-7', text)
         self.assertIn('Codex thread ' + THREAD_ID, text)
+        self.assertNotIn(markup, text)
+        self.assertIn(markup.replace('<', '&lt;'), text)
+        self.assertIn('`<USER_REQUEST_EXAMPLE>`', text)
 
     def test_read_antigravity_refuses_symlinks_hardlinks_and_missing_history(self):
         missing = self.run_helper('--read-antigravity', self.AGY_ID, '--antigravity-home', str(self.home))

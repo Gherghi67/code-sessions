@@ -288,6 +288,7 @@ NATIVE_TOOL_ROWS_SINCE = (2, 1, 326)
 # including its ~240-byte wrapper), while multiple injectSteps each keep up to that cap.
 AGY_STEP_CHUNK_BYTES = 32000
 AGY_METADATA_NAMES = r"(?:ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)"
+AGY_WRAPPER_TAG = re.compile(rf"<(?=/?(?:SYSTEM_MESSAGE|USER_REQUEST|{AGY_METADATA_NAMES})>)")
 AGY_METADATA_TAG = re.compile(
     rf"<{AGY_METADATA_NAMES}>(?:(?!</{AGY_METADATA_NAMES}>).)*</{AGY_METADATA_NAMES}>\s*", re.S)
 # The prompt and the trailing metadata can each quote the request delimiter.
@@ -1682,7 +1683,8 @@ def antigravity_carry_chunks(messages, note, chunk_bytes=AGY_STEP_CHUNK_BYTES):
     blocks = []
     for message in messages:
         heading = "### User" if message["role"] == "user" else "### Assistant"
-        body = AGY_CARRIED_LITERAL_HEADING.sub(lambda m: "\\" + m[0], message["text"])
+        body = AGY_WRAPPER_TAG.sub("&lt;", message["text"])
+        body = AGY_CARRIED_LITERAL_HEADING.sub(lambda m: "\\" + m[0], body)
         blocks.append(heading + "\n\n" + body)
     # Reserve headroom for the note and part marker on chunk 1 and part marker on later chunks.
     marker_reserve = len(note.encode("utf-8")) + 64
