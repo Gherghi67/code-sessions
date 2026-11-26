@@ -3685,6 +3685,36 @@ test_antigravity_reopen_carries_the_newer_codex_conversation() {
         "$dir/.cs/timeline.jsonl" >/dev/null || { echo "  FAIL: first carry-over records lineage with empty from"; return 1; }
 }
 
+test_antigravity_carries_only_existing_codex_history_from_its_vault() {
+    local output dir codex_id vault_home shared_home
+    codex_id=55555555-5555-4555-8555-555555555556
+    output=$("$CS_BIN" carry-vault-codex --engine antigravity </dev/null 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir carry-vault-codex)
+    _vault_session carry-vault-codex
+    vault_home="${VAULT_HOME%/*}/codex-home"
+    shared_home="$TEST_TMPDIR/shared-codex-home"
+
+    # With only a shell-home copy of the rollout, there is nothing to carry.
+    _agy_write_codex_source "$dir" "$codex_id" "$shared_home"
+    : > "$AGY_HOOK_OUT"
+    output=$(CODEX_HOME="$shared_home" CS_ASSUME_TTY=1 \
+        "$CS_BIN" carry-vault-codex --engine antigravity <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "the Codex conversation cannot be carried over" "missing vault history is reported" || return 1
+    assert_output_not_contains "$output" "Carrying over the Codex conversation" "the shell-home rollout is not offered" || return 1
+    assert_file_not_contains "$AGY_HOOK_OUT" "JADE-WOLF" "the shell-home rollout is not imported" || return 1
+
+    # An existing vault rollout is readable even without the shared Codex home.
+    _agy_write_codex_source "$dir" "$codex_id" "$vault_home"
+    : > "$AGY_HOOK_OUT"
+    output=$(CODEX_HOME="$TEST_TMPDIR/missing-codex-home" \
+        AGY_NEW_ID=22222222-2222-4222-8222-222222222228 CS_ASSUME_TTY=1 \
+        "$CS_BIN" carry-vault-codex --engine antigravity <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "Carrying over the Codex conversation" "the existing vault rollout is offered" || return 1
+    assert_file_contains "$AGY_HOOK_OUT" "JADE-WOLF" "the vault rollout is imported" || return 1
+    assert_not_exists "$vault_home/config.toml" "preview does not seed the vault configuration" || return 1
+    assert_not_exists "$TEST_TMPDIR/missing-codex-home" "preview does not create a shared Codex home"
+}
+
 test_antigravity_reopen_e_n_and_esc_do_not_carry() {
     local output dir old_id claude_id status=0
     old_id=11111111-1111-4111-8111-111111111112
@@ -3954,6 +3984,7 @@ run_test test_doctor_warns_when_agy_is_missing_despite_an_installed_status_line
 run_test test_doctor_reports_the_antigravity_status_line
 run_test test_antigravity_reopen_carries_the_newer_claude_conversation
 run_test test_antigravity_reopen_carries_the_newer_codex_conversation
+run_test test_antigravity_carries_only_existing_codex_history_from_its_vault
 run_test test_antigravity_reopen_e_n_and_esc_do_not_carry
 run_test test_antigravity_carry_over_guards_no_turn_missing_hook_and_subagent
 run_test test_antigravity_carry_digest_does_not_depend_on_workspace_imports

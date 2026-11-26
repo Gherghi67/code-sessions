@@ -25456,7 +25456,7 @@ _antigravity_carry_sha256() {  # file
 # transplant_id, transplant_size and transplant_file (the injectSteps JSON
 # staged outside the session, or inside .cs/private for an encrypted session).
 _antigravity_transplant_prepare() {  # session_dir
-    local session_dir="$1" source from src_id helper stage_dir file transcript stats
+    local session_dir="$1" source from src_id helper stage_dir file transcript stats codex_home=""
     source=$(_transplant_source "$session_dir" antigravity) || return 0
     from=${source%% *}
     src_id=${source#* }
@@ -25487,7 +25487,23 @@ _antigravity_transplant_prepare() {  # session_dir
             fi
             ;;
         codex)
-            if ! stats=$( _export_session_codex_home "$session_dir" existing || true
+            # A preview only reads the vault's existing history. Setting up
+            # a launch home here would touch config and the active run lease.
+            if _switch_session_encrypted "$session_dir"; then
+                if ! codex_home=$(_codex_vault_home_path "$session_dir") \
+                    || [ ! -d "$codex_home" ] || [ -L "$codex_home" ] \
+                    || [ -L "$codex_home/sessions" ] || [ -L "$codex_home/archived_sessions" ]; then
+                    rm -f "$file"
+                    _transplant_unreadable codex "the vault Codex history is unavailable"
+                    return 0
+                fi
+            fi
+            if ! stats=$(
+                if [ -n "$codex_home" ]; then
+                    export CODEX_HOME="$codex_home"
+                else
+                    _codex_drop_inherited_vault_home
+                fi
                 "$helper" --export-antigravity --thread-id "$src_id" --out "$file" 2>&1 ); then
                 rm -f "$file"
                 _transplant_unreadable codex "$stats"
