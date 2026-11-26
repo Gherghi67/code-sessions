@@ -155,8 +155,8 @@ LOCAL="$META_DIR/local"
 # out the next task as a block, and its context breaker owns hot-context
 # handling, so an armed or draining queue gets no notices. The test is the
 # drain's own: the lead's Stop, a queue holding a task, and a queue.state of
-# armed or draining. An empty queue never gates, whatever queue.state records;
-# a teammate's Stop never drains, so it is not gated either. A queue a link
+# armed, draining, or waiting for background work. An empty queue never gates,
+# whatever queue.state records. A teammate's Stop never drains, so it is not gated either. A queue a link
 # carries out of the session, or one in a locked vault, is not drained and
 # gates nothing.
 _qdir=""
@@ -169,7 +169,7 @@ if [ -n "$_qdir" ] && cs_is_lead; then
     for _task in "$_qdir"/queue/*; do
         [ -f "$_task" ] || continue
         _qstate=$(cat "$_qdir/queue.state" 2>/dev/null | tr -d '[:space:]' || true)
-        case "$_qstate" in armed|draining) exit 0 ;; esac
+        case "$_qstate" in armed|draining|waiting-background) exit 0 ;; esac
         break
     done
 fi

@@ -216,7 +216,7 @@ run_checkpoint() {
 # Machine-local queue of prompts drained by the Stop hook. Files live in
 # <session>/.cs/local/ (.cs/private/ in an encrypted session): queue/ (one
 # file per task, staged via queue.tmp/),
-# queue.done, queue.state (idle|armed|draining), queue.mode (subagents|workflow,
+# queue.done, queue.state (idle|armed|draining|waiting-background), queue.mode (subagents|workflow,
 # absent to run tasks in the conversation), queue.current (the task the drain
 # last handed out), queue.failed (a reported failure the drain has not parked
 # on yet), queue.accepted (message ids cs -queue accept already queued).
