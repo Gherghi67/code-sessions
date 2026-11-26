@@ -155,11 +155,15 @@ _project_tree_is_dirty() {
 # puts back (_landing_carries). git merge --ff-only refuses over any, and the
 # landing would report that as the base having moved. Fails when git cannot
 # list the base's files.
-_landing_overwrites() {  # base_dir touched_file landed
+_landing_overwrites() {  # base_dir touched_file landed [base_untracked base_changed]
     [ -s "$2" ] || return 0
     local untracked changed path
-    untracked=$(git -C "$1" ls-files --others --exclude-standard) || return 1
-    changed=$(git -C "$1" diff --name-only HEAD) || return 1
+    if [ "$#" -eq 5 ]; then
+        untracked="$4" changed="$5"
+    else
+        untracked=$(git -C "$1" ls-files --others --exclude-standard) || return 1
+        changed=$(git -C "$1" diff --name-only HEAD) || return 1
+    fi
     [ -z "$untracked" ] || printf '%s\n' "$untracked" | { grep -Fxf "$2" || [ $? -eq 1 ]; } | sed 's/^/untracked /'
     [ -z "$changed" ] || printf '%s\n' "$changed" | { grep -Fxf "$2" || [ $? -eq 1 ]; } | while IFS= read -r path; do
         if _landing_carries "$1" "$path" "$3"; then
@@ -190,10 +194,9 @@ _landing_carries() {  # base_dir path landed
 # the branch changed since it forked from the base that still differ from the
 # base's HEAD. None once the branch's content is in the base, however it
 # landed, and none for a branch that shares no commit with the base.
-_predicted_landing_paths() {  # base_dir branch
-    local fork
-    fork=$(git -C "$1" merge-base HEAD "$2" 2>/dev/null) || return 0
-    { git -C "$1" diff --name-only "$fork" "$2" && git -C "$1" diff --name-only HEAD "$2"; } \
+_predicted_landing_paths() {  # base_dir branch fork
+    [ -n "$3" ] || return 0
+    { git -C "$1" diff --name-only "$3" "$2" && git -C "$1" diff --name-only HEAD "$2"; } \
         | env LC_ALL=C sort | uniq -d
 }
 
@@ -201,12 +204,10 @@ _predicted_landing_paths() {  # base_dir branch
 # commit holds them, one per line: those it changes (_predicted_landing_paths)
 # that the base has not committed to since the branch forked, so the landing
 # merges nothing into them.
-_landing_delivers() {  # base_dir branch
-    local fork changes held
-    fork=$(git -C "$1" merge-base HEAD "$2" 2>/dev/null) || return 0
-    changes=$(_predicted_landing_paths "$1" "$2") || return 1
+_landing_delivers() {  # base_dir fork changes
+    local changes="$3" held
     [ -n "$changes" ] || return 0
-    held=$(git -C "$1" diff --name-only "$fork" HEAD) || return 1
+    held=$(git -C "$1" diff --name-only "$2" HEAD) || return 1
     if [ -z "$held" ]; then
         printf '%s\n' "$changes"
     else
@@ -764,16 +765,15 @@ worktree $d_real
 #   task branch ahead merged ff wt_dirty untracked base_dirty lock state
 # Every fact is computed by the function the real gate calls, so the answer can
 # never disagree with the refusal the merge would produce.
-_feature_readiness() {  # base_name task
+_feature_readiness() {  # base_name task base_dir base_project_dirty base_untracked base_changed
     local base_name="$1" task="$2"
-    local base_dir wt_dir wt_name branch
-    base_dir=$(_resolve_session_dir "$base_name")
+    local base_dir="$3" wt_dir wt_name branch
     wt_name="$base_name@$task"
     wt_dir="$SESSIONS_ROOT/$wt_name"
     branch=$(_read_local_state "$wt_dir/.cs/local/state" task_branch)
     [ -n "$branch" ] || branch="cs/$task"
 
-    local ahead=0 merged=0 ff=0 wt_dirty=0 untracked=0 base_dirty=0 lock="none"
+    local ahead=0 merged=0 ff=0 wt_dirty=0 untracked=0 base_dirty="$4" lock="none"
 
     ahead=$(git -C "$base_dir" rev-list --count "HEAD..$branch" 2>/dev/null || echo 0)
 
@@ -802,14 +802,19 @@ _feature_readiness() {  # base_name task
     # The integrate refuses over project work the base left uncommitted, and
     # over a session record or an untracked file the landing would overwrite,
     # but for the narrative and timeline lines it carries.
-    if _project_tree_is_dirty "$base_dir"; then
-        base_dirty=1
-    else
+    local mode fork="" paths=""
+    mode=$(_read_local_state "$wt_dir/.cs/local/state" cs_mode)
+    if [ "$base_dirty" = 0 ] || [ "$mode" != ignored ]; then
+        fork=$(git -C "$base_dir" merge-base HEAD "$branch" 2>/dev/null) || fork=""
+        paths=$(_predicted_landing_paths "$base_dir" "$branch" "$fork") \
+            || error "Could not list what landing $branch would change in $base_dir"
+    fi
+    if [ "$base_dirty" = 0 ] && [ -n "$paths" ]; then
         local landing overwrites
         landing=$(mktemp "${TMPDIR:-/tmp}/cs-landing.XXXXXX") \
             || error "Could not create a temporary file under ${TMPDIR:-/tmp}"
-        if ! _predicted_landing_paths "$base_dir" "$branch" > "$landing" \
-            || ! overwrites=$(_landing_overwrites "$base_dir" "$landing" "$branch"); then
+        if ! printf '%s\n' "$paths" > "$landing" \
+            || ! overwrites=$(_landing_overwrites "$base_dir" "$landing" "$branch" "$5" "$6"); then
             rm -f "$landing"
             error "Could not list what landing $branch would change in $base_dir"
         fi
@@ -832,7 +837,7 @@ _feature_readiness() {  # base_name task
     local others conflicts="" vault_locked=""
     others=$(_worktree_untracked_at_risk "$wt_dir") \
         || error "Could not list the untracked files in $wt_dir"
-    if [ "$(_read_local_state "$wt_dir/.cs/local/state" cs_mode)" = "ignored" ]; then
+    if [ "$mode" = ignored ]; then
         vault_locked=$(_locked_vault_link "$base_dir/.cs")
         if [ -z "$vault_locked" ]; then
             conflicts=$(_fuse_conflicts "$wt_dir/.cs" "$base_dir/.cs" "$task") \
@@ -845,7 +850,7 @@ _feature_readiness() {  # base_name task
         local delivered
         delivered=$(mktemp "${TMPDIR:-/tmp}/cs-landing.XXXXXX") \
             || error "Could not create a temporary file under ${TMPDIR:-/tmp}"
-        if ! _landing_delivers "$base_dir" "$branch" > "$delivered"; then
+        if ! _landing_delivers "$base_dir" "$fork" "$paths" > "$delivered"; then
             rm -f "$delivered"
             error "Could not list what landing $branch would change in $base_dir"
         fi
@@ -3518,11 +3523,19 @@ run_features() {  # base_name [--porcelain]
     local features task record branch ahead untracked lock state sentence
     features=$(_worktree_features "$base_name")
     [ -n "$features" ] || return 0
+    local base_dir base_project_dirty=0 base_untracked="" base_changed=""
+    base_dir=$(_resolve_session_dir "$base_name")
+    if _project_tree_is_dirty "$base_dir"; then
+        base_project_dirty=1
+    elif ! base_untracked=$(git -C "$base_dir" ls-files --others --exclude-standard) \
+        || ! base_changed=$(git -C "$base_dir" diff --name-only HEAD); then
+        error "Could not list the files in $base_dir"
+    fi
 
     if [ -n "$porcelain" ]; then
         while IFS= read -r task; do
             [ -n "$task" ] || continue
-            _feature_readiness "$base_name" "$task"
+            _feature_readiness "$base_name" "$task" "$base_dir" "$base_project_dirty" "$base_untracked" "$base_changed"
         done <<< "$features"
         return 0
     fi
@@ -3530,7 +3543,7 @@ run_features() {  # base_name [--porcelain]
     printf '%-24s %-24s %6s  %s\n' "FEATURE" "BRANCH" "AHEAD" "STATE"
     while IFS= read -r task; do
         [ -n "$task" ] || continue
-        record=$(_feature_readiness "$base_name" "$task")
+        record=$(_feature_readiness "$base_name" "$task" "$base_dir" "$base_project_dirty" "$base_untracked" "$base_changed")
         # Read on a separator that is not IFS whitespace: a run of tabs
         # collapses under IFS=$'\t', and an empty field would shift the rest.
         IFS=$'\037' read -r task branch ahead _ _ _ untracked _ lock state <<< "${record//$'\t'/$'\037'}"

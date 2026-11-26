@@ -7746,6 +7746,31 @@ test_features_ignores_base_session_records_the_landing_leaves_alone() {
 
 run_test test_features_ignores_base_session_records_the_landing_leaves_alone
 
+test_features_reuses_the_base_checkout_scan() {
+    local base_dir task wt trace lines untracked_scans landing_diffs
+    base_dir=$(_tracked_base myproj) || return 1
+    for task in first second; do
+        cs_launch "myproj@$task"
+        wt="$CS_SESSIONS_ROOT/myproj@$task"
+        echo "feature change" > "$wt/shared.txt"
+        (cd "$wt" && git add shared.txt && git commit -q -m "feature change") || return 1
+    done
+    echo "untracked on the base" > "$base_dir/shared.txt"
+    trace="$TEST_TMPDIR/features-git-trace"
+    lines=$(GIT_TRACE2_EVENT="$trace" "$CS_BIN" myproj -features --porcelain) || return 1
+    assert_eq "base-dirty base-dirty" "$(awk -F'\t' '{print $10}' <<< "$lines" | paste -sd ' ' -)" \
+        "both landings would overwrite the untracked base file" || return 1
+    untracked_scans=$(jq -s --arg base "$base_dir" \
+        '[.[] | select(.event == "start" and .argv[1:] == ["-C", $base, "ls-files", "--others", "--exclude-standard"])] | length' "$trace")
+    assert_eq "1" "$untracked_scans" "the feature list enumerates base untracked files once" || return 1
+    landing_diffs=$(jq -s --arg base "$base_dir" \
+        '[.[] | select(.event == "start" and .argv[1:6] == ["-C", $base, "diff", "--name-only", "HEAD"])
+               | select((.argv[6] // "") | startswith("cs/"))] | length' "$trace")
+    assert_eq "2" "$landing_diffs" "each feature calculates its landing paths once"
+}
+
+run_test test_features_reuses_the_base_checkout_scan
+
 # Readiness agrees with the retire gate: an ignored file does not block a
 # retire (it goes to the trash), so it is not counted as untracked work.
 test_features_does_not_count_ignored_files_as_untracked() {
