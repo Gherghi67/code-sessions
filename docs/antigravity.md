@@ -836,7 +836,6 @@ Skills that check before relying on a capability refuse cleanly
 | --- | --- |
 | A wake for mail that comes while the conversation sits idle at its prompt | `agy` has no event for that moment, so the mail shows at the next prompt ([Mail](#mail)). |
 | Mail and the binding in a conversation the run never bound, opened with `/resume` or `/fork` after the first turn | The bound conversation keeps the digest and wake. Reopen and pick the conversation with `/resume` before the first turn ([Mail](#mail), [Forks](#forks)). `/clear` and `/new` move the session, and a conversation that held it earlier in the run takes it back when you return to it with `/resume` ([Rotation through /clear](#rotation-through-clear)). |
-| Crash-recovery prompt | Edits are snapshotted ([Recovery copies](#recovery-copies)), but nothing offers them back; restore by hand. |
 | `--remote` | Claude only. |
 
 A feature worktree (`cs <base>@<feature> --engine antigravity`) launches like
@@ -970,22 +969,37 @@ empty `error`. The hook turns each such edit into the shared `files_changed`
 event (`_cs_antigravity_adapter_files_changed` in `lib/25-engine-events.sh`).
 The recovery consumer then snapshots it to
 `refs/worktree/cs/session/<conversation id>`, as it does for Claude and Codex.
+If staging outlasts the hook's 10-second limit, or the run loses its lease
+before it can publish, the previous autosave remains available.
 An edit a shell command makes through `run_command` names no file, so it is
 not snapshotted. The same is true of shell edits under the other engines.
 
-Nothing offers these copies back under Antigravity. Claude's crash-recovery
-prompt reads only the ref of the Claude conversation it starts, a clean `agy`
-exit leaves the ref in place, and only a later Claude start or resume of the
-session prunes conversation refs whose last snapshot is older than 14 days.
-Each snapshot holds the whole working tree, so the newest ref has every edit
-up to that moment, whichever conversation made it. `cs -engine` prints the
-bound conversation as `conversation:`. To list the refs, newest first, then
-compare and restore a file by hand:
+When you reopen the same conversation in the same worktree after an
+interrupted managed run, `cs` shows the saved changes if they differ from
+what is already on disk. The offer appears before `agy` starts. Press `r`
+to restore to the working tree, `v` for a command to review the saved patch,
+`d` to discard the recovery copy, or Enter to keep it for a later reopen.
+The review command disables replacement refs, external diff tools, and text
+conversion.
+Noninteractive opens also keep the copy for later. A clean exit keeps the
+ordinary autosave ref without creating an offer.
+
+Restore requires the snapshot's base to match the current `HEAD`. Files
+already on disk as saved are skipped. If a remaining file has staged or
+conflicting working-tree changes, `cs` leaves the recovery copy available
+for individual review. If `HEAD` moved, the base is unknown, or the snapshot
+includes a submodule change, review the saved patch and recover individually.
+Older autosaves without run information remain available for manual review.
+
+`cs -engine` prints the bound conversation as `conversation:`. List the
+recovery and ordinary autosave refs newest first, then review or restore a
+file by hand using the chosen ref. The last command writes the selected
+version to the working tree, so compare it with your current file first.
 
 ```bash
-git -C <session> for-each-ref --sort=-committerdate refs/worktree/cs/session/
-git -C <session> diff HEAD refs/worktree/cs/session/<conversation id> -- <file>
-git -C <session> checkout refs/worktree/cs/session/<conversation id> -- <file>
+git -C <session> for-each-ref --sort=-committerdate refs/worktree/cs/antigravity-recovery/ refs/worktree/cs/session/
+git -C <session> diff <ref> -- <file>
+git -C <session> restore --source=<ref> -- <file>
 ```
 
 The design was checked against `agy` 1.4.10 on 2026-10-30: two headless turns

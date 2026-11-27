@@ -199,18 +199,21 @@ test_getting_started_covers_main_workflows_and_codex_limit() {
     done
 }
 
-# Antigravity declares recovery_autosave, yet nothing offers its snapshots
-# back: Claude's SessionStart reads only its own conversation's ref. The page
-# must give the manual restore, as Codex's docs do. And agy asks once per
-# folder whether to trust it, which a first open of each session meets.
-test_antigravity_doc_states_manual_recovery_and_the_trust_dialog() {
+# Recovery is offered on the matching reopen. Individual recovery is still
+# needed when a whole snapshot cannot be restored safely. A first open in
+# each folder also meets agy's separate trust dialog.
+test_antigravity_doc_states_recovery_and_the_trust_dialog() {
     local doc="$REPO/docs/antigravity.md"
-    assert_file_contains "$doc" 'for-each-ref --sort=-committerdate refs/worktree/cs/session/' \
-        "antigravity.md must show how to list the recovery refs" || return 1
-    assert_file_contains "$doc" 'checkout refs/worktree/cs/session/<conversation id> -- <file>' \
+    assert_file_contains "$doc" 'reopen the same conversation in the same worktree' \
+        "antigravity.md must state the scope of the recovery offer" || return 1
+    assert_file_contains "$doc" 'for-each-ref --sort=-committerdate refs/worktree/cs/antigravity-recovery/ refs/worktree/cs/session/' \
+        "antigravity.md must show how to list recovery and autosave refs" || return 1
+    assert_file_contains "$doc" 'diff <ref> -- <file>' \
+        "antigravity.md must show the per-file review" || return 1
+    assert_file_contains "$doc" 'restore --source=<ref> -- <file>' \
         "antigravity.md must show the per-file restore" || return 1
-    assert_file_contains "$REPO/docs/engine-adapters.md" 'Codex and Antigravity snapshots can' \
-        "engine-adapters.md must say Antigravity snapshots are inspected by hand" || return 1
+    assert_file_contains "$REPO/docs/engine-adapters.md" 'Antigravity offers a recovery copy on interactive reopen' \
+        "engine-adapters.md must describe the Antigravity recovery offer" || return 1
     assert_file_contains "$doc" 'Do you trust the contents of this project?' \
         "antigravity.md must name agy's folder-trust dialog" || return 1
     assert_file_contains "$doc" 'trustedWorkspaces' "and where agy records the answer"
@@ -218,7 +221,7 @@ test_antigravity_doc_states_manual_recovery_and_the_trust_dialog() {
 
 run_test test_code_sessions_is_a_fork_started_as_ccs
 run_test test_getting_started_covers_main_workflows_and_codex_limit
-run_test test_antigravity_doc_states_manual_recovery_and_the_trust_dialog
+run_test test_antigravity_doc_states_recovery_and_the_trust_dialog
 # A test that needs a command guards it with require_tool, the one place that
 # knows CI's declared tools: there a missing tool fails instead of skipping. A
 # guard written by hand skips (or, returning 0, passes) on a CI runner that

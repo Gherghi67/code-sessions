@@ -467,7 +467,7 @@ _antigravity_transplant_prepare() {  # session_dir
 }
 
 _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge, intent, remote_mode
-    local session_name="$1" session_dir="$2" merge_feature="${5:-}" intent="${6:-auto}"
+    local session_name="$1" session_dir="$2" force="${4:-}" merge_feature="${5:-}" intent="${6:-auto}"
     local finish_dir="" merge_kick=""
     local meta_dir="$session_dir/.cs" agy_bin="${AGY_BIN:-agy}"
     local binding_file recorded reopen response="" actor run_dir=""
@@ -962,8 +962,13 @@ $prompt"
     # header); nothing else in this shell changes.
     local -a home_args=()
     [ -z "$vault_home" ] || home_args=(env HOME="$vault_home" CS_ANTIGRAVITY_SHARED_HOME="$shared_home" CS_ANTIGRAVITY_VAULT_RUN="$CS_RUN_ID")
+    if [ -n "$reopen" ] && [ -z "$merge_feature$rotation_handoff$carry$spawn_kick${_spawn_token:-}" ] \
+        && [ "$force" != true ] && [ "${CS_COLLISION_FORCE:-}" != 1 ] && cs_interactive; then
+        _antigravity_recovery_offer "$session_dir" "$reopen"
+    fi
     cs_run_child ${home_args[@]+"${home_args[@]}"} "$agy_bin" ${reopen_args[@]+"${reopen_args[@]}"} ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} \
         ${statusline_args[@]+"${statusline_args[@]}"} ${queue_args[@]+"${queue_args[@]}"} ${prompt_args[@]+"${prompt_args[@]}"} || status=$?
+    [ "$status" -eq 0 ] || _cs_run_interrupted=1
     # The watcher goes as soon as agy does, before anything else the run does
     # (a switch's relaunch would otherwise get its keys). Keys it typed just
     # before agy exited can wait unread in the terminal and would run in the
@@ -1533,7 +1538,9 @@ _antigravity_hook_post_tool_use() {  # payload
     [ -n "$event" ] || return 0
     script="$(_antigravity_plugin_dir)/scripts/autosave-commits.sh"
     [ -r "$script" ] || return 0
-    printf '%s' "$event" | bash "$script" --event || true
+    # Finish publishing before the native child can exit. The consumer
+    # rechecks the lease under the guard only when publishing the ref.
+    printf '%s' "$event" | bash "$script" --event --antigravity-run "$CS_RUN_ID" || true
 }
 
 # Mail, measured on agy 1.5.8. A PreInvocation answer

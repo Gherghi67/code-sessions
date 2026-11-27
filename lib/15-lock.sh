@@ -117,6 +117,10 @@ _cs_acquire_session_lock_guarded() {  # meta_dir, force
     if [ -n "$lock_pid" ] && [ "$force" != true ]; then return 73; fi
     if [ -e "$meta/session.lock" ] && [ -z "$lock_pid" ]; then
         warn "Removing stale session lock (PID $(_cs_plain_name "$(read_lock_pid "$meta")" 40))"
+        if declare -F _antigravity_recovery_record_interruption >/dev/null; then
+            _antigravity_recovery_record_interruption "$meta" \
+                || warn 'Could not retain Antigravity crash recovery. The autosaves remain available for manual recovery.'
+        fi
     fi
     umask 077
     lock_tmp=$(mktemp "$meta/local/.session-lock.XXXXXX") || return 1
@@ -200,6 +204,11 @@ _cs_release_session_lock_guarded() {  # meta_dir
     [ ! -L "$meta/session.lock" ] && [ -f "$meta/session.lock" ] || return 0
     if [ -f "$meta/local/run-lease.json" ]; then
         cs_run_lease_owned "$meta" || return 0
+        if [ -n "${_cs_run_interrupted:-}" ] && [ "${_cs_run_native_status:-}" != 0 ] \
+            && declare -F _antigravity_recovery_record_interruption >/dev/null; then
+            _antigravity_recovery_record_interruption "$meta" \
+                || warn 'Could not retain Antigravity crash recovery. The autosaves remain available for manual recovery.'
+        fi
         rm -f "$meta/session.lock" "$meta/local/run-lease.json"
     elif [ -z "${CS_RUN_ID:-}" ]; then
         { IFS= read -r lock_pid < "$meta/session.lock"; } 2>/dev/null || return 0

@@ -8,6 +8,7 @@ source "$SCRIPT_DIR/../lib/02-shared.sh"
 source "$SCRIPT_DIR/../lib/15-lock.sh"
 source "$SCRIPT_DIR/../lib/16-lifecycle.sh"
 source "$SCRIPT_DIR/../lib/40-state.sh"
+source "$SCRIPT_DIR/../lib/79-antigravity-recovery.sh"
 source "$SCRIPT_DIR/../hooks/cs-resolve.sh"
 
 cs_interactive() { return 1; }
@@ -28,14 +29,22 @@ source "$CS_TEST_SOURCE_DIR/lib/02-shared.sh"
 source "$CS_TEST_SOURCE_DIR/lib/15-lock.sh"
 source "$CS_TEST_SOURCE_DIR/lib/16-lifecycle.sh"
 source "$CS_TEST_SOURCE_DIR/lib/40-state.sh"
+source "$CS_TEST_SOURCE_DIR/lib/79-antigravity-recovery.sh"
 cs_interactive() { return 1; }
 warn() { printf '%s\n' "$*" >&2; }
 _set_local_state() { printf '%s: %s\n' "$2" "$3" >> "$1"; }
+if [ -n "${CS_TEST_RECOVERY_RUN:-}" ]; then
+    _alloc_uuid() { printf '%s\n' "$CS_TEST_RECOVERY_RUN"; }
+fi
 cs_engine_call() {
+    local status=0
     printf '%s\n' "$CS_RUN_ID" > "$CS_TEST_SESSION_DIR/run-id"
-    cs_run_child "$CS_TEST_WORKER"
+    cs_run_child "$CS_TEST_WORKER" || status=$?
+    if [ "$1" = antigravity ] && [ "$status" -ne 0 ]; then _cs_run_interrupted=1; fi
+    if [ -n "${CS_TEST_POST_NATIVE_SIGNAL:-}" ]; then kill "-$CS_TEST_POST_NATIVE_SIGNAL" "$$"; fi
+    return "$status"
 }
-cs_launch_session claude demo "$CS_TEST_SESSION_DIR" false "${CS_TEST_FORCE:-false}" '' auto
+cs_launch_session "${CS_TEST_ENGINE:-claude}" demo "$CS_TEST_SESSION_DIR" false "${CS_TEST_FORCE:-false}" '' auto
 DRIVER
     cat > "$CS_TEST_WORKER" <<'WORKER'
 #!/usr/bin/env bash
@@ -95,6 +104,53 @@ test_shared_exit_status_and_cleanup() {
     assert_eq "$(cat "$CS_TEST_SESSION_DIR/run-id")" "$(cat "$CS_TEST_SESSION_DIR/child-run-id")" || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/run-lease.json" || return 1
+}
+
+_seed_recovery_snapshot() {
+    local repo="$CS_TEST_SESSION_DIR" tree oid
+    git -C "$repo" init -q && git -C "$repo" config user.name Fixture \
+        && git -C "$repo" config user.email fixture@example.com || return 1
+    printf 'saved\n' > "$repo/snapshot"
+    git -C "$repo" add snapshot || return 1
+    tree=$(git -C "$repo" write-tree) || return 1
+    oid=$(git -C "$repo" commit-tree "$tree" -m snapshot -m "cs-run: $1") || return 1
+    git -C "$repo" update-ref "refs/worktree/cs/session/$1" "$oid"
+}
+
+_interrupt_after_clean_native_exit() {
+    local signal="$1" expected="$2" status=0 run=12345678-1234-4123-8123-123456789abc
+    local meta="$CS_TEST_SESSION_DIR/.cs" ref="refs/worktree/cs/antigravity-recovery/$run"
+    _seed_recovery_snapshot "$run" || return 1
+    CS_TEST_ENGINE=antigravity CS_TEST_RECOVERY_RUN="$run" CS_TEST_POST_NATIVE_SIGNAL="$signal" \
+        "$TEST_TMPDIR/driver" > "$TEST_TMPDIR/exit.log" 2>&1 || status=$?
+    assert_eq "$expected" "$status" "only the launcher was interrupted after the native exit" || return 1
+    if [ "$signal" = KILL ]; then
+        _test_lease successor
+        acquire_session_lock "$meta" false demo || return 1
+        release_session_lock "$meta"
+    fi
+    assert_eq "" "$(git -C "$CS_TEST_SESSION_DIR" for-each-ref --format='%(refname)' "$ref")" \
+        "the clean native run must not be promoted"
+}
+
+test_term_after_native_success_does_not_promote_recovery() {
+    _interrupt_after_clean_native_exit TERM 143
+}
+
+test_stale_lease_after_native_success_does_not_promote_recovery() {
+    _interrupt_after_clean_native_exit KILL 137
+}
+
+test_recovery_promotion_failure_is_reported() {
+    local status=0 run=12345678-1234-4123-8123-123456789abc
+    local ref_dir="$CS_TEST_SESSION_DIR/.git/refs/worktree/cs/antigravity-recovery"
+    _seed_recovery_snapshot "$run" || return 1
+    mkdir -p "$ref_dir" && touch "$ref_dir/$run.lock" || return 1
+    CS_TEST_ENGINE=antigravity CS_TEST_RECOVERY_RUN="$run" CS_TEST_EXIT=1 \
+        "$TEST_TMPDIR/driver" > "$TEST_TMPDIR/exit.log" 2>&1 || status=$?
+    assert_eq 1 "$status" "promotion failure preserves the native status" || return 1
+    assert_file_contains "$TEST_TMPDIR/exit.log" 'autosaves remain available for manual recovery' || return 1
+    git -C "$CS_TEST_SESSION_DIR" show-ref --verify --quiet "refs/worktree/cs/session/$run"
 }
 
 # An installed hook can change while a launcher from the previous fork is
@@ -490,6 +546,9 @@ _guard_open_check_cases() {
 }
 
 run_test test_shared_exit_status_and_cleanup
+run_test test_term_after_native_success_does_not_promote_recovery
+run_test test_stale_lease_after_native_success_does_not_promote_recovery
+run_test test_recovery_promotion_failure_is_reported
 run_test test_pre_claim_launcher_keeps_its_native_lead_after_upgrade
 run_test test_pre_claim_lease_checks_native_identity_on_every_call
 run_test test_terminal_stdin_reaches_child

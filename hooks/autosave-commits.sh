@@ -64,10 +64,21 @@ fi
 # Only run in cs sessions
 cs_resolve_session "" || exit 0
 
+_UUID_RE='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+RECOVERY_RUN=""
+if [ "${1:-}" = --event ] && [ "${2:-}" = --antigravity-run ] && [[ "${3:-}" =~ $_UUID_RE ]]; then
+    RECOVERY_RUN="$3"
+    while IFS= read -r git_var; do unset "$git_var"; done < <(git rev-parse --local-env-vars)
+    export GIT_NO_REPLACE_OBJECTS=1
+fi
 SESSION_DIR="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"
 META_DIR="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-$SESSION_DIR/.cs}}"
 if [ -z "$SESSION_DIR" ] || [ ! -d "$SESSION_DIR" ]; then
     exit 0
+fi
+if [ -n "$RECOVERY_RUN" ]; then
+    [ "$RECOVERY_RUN" = "${CS_RUN_ID:-}" ] && [ "${CS_RUN_ENGINE:-}" = antigravity ] \
+        && cs_run_lease_owned "$META_DIR" 2>/dev/null || exit 0
 fi
 
 # Several git calls follow: run the selected Xcode's git, not the stub that
@@ -115,7 +126,6 @@ done < <(printf '%s' "$INPUT" | jq -r '.files[]')
 # conversation UUID, so concurrent sessions on one checkout never share or
 # clobber each other's snapshot chain. A missing/malformed id can't key a ref.
 SESSION_UUID=$(echo "$INPUT" | jq -r '.session_id // empty')
-_UUID_RE='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 [[ "$SESSION_UUID" =~ $_UUID_RE ]] || exit 0
 SESSION_REF="refs/worktree/cs/session/$SESSION_UUID"
 
@@ -143,6 +153,21 @@ case "$FILE_PATH" in
         ;;
 esac
 done < <(printf '%s' "$INPUT" | jq -r '.files[]')
+
+_publish_autosave() {  # commit, previous commit, base
+    if [ -n "$RECOVERY_RUN" ]; then
+        [ "$(git rev-parse -q --verify HEAD 2>/dev/null || true)" = "$3" ] || return 1
+        git update-ref --no-deref "$SESSION_REF" "$1" "$2" 2>/dev/null || return 1
+    else
+        git update-ref "$SESSION_REF" "$1" 2>/dev/null || return 1
+    fi
+
+    if [ -n "$LATEST_ENTRY" ]; then
+        if LOG_DIR=$(cs_private_dir "$META_DIR"); then
+            cs_append_inside "$LOG_DIR/session.log" echo "[$TIMESTAMP] Autosave: $LATEST_ENTRY" || true
+        fi
+    fi
+}
 
 # Autosave to shadow ref using git plumbing (does not touch HEAD or main branch)
 # Fires on ALL Write/Edit — protects all files, not just the narrative
@@ -214,12 +239,25 @@ autosave_to_shadow_ref() {
         [ -n "$base" ] && msg="$msg
 
 cs-base: $base"
+        if [ -n "$RECOVERY_RUN" ]; then
+            [ -n "$base" ] || msg="$msg
+"
+            msg="$msg
+cs-run: $RECOVERY_RUN"
+        fi
 
         # Chain onto this conversation's previous autosave if it exists
-        parent=$(git rev-parse -q --verify "$SESSION_REF" 2>/dev/null || true)
+        if [ -n "$RECOVERY_RUN" ]; then
+            parent=$(git for-each-ref --format='%(objectname) %(objecttype) %(refname) %(symref)' "$SESSION_REF" \
+                | awk -v ref="$SESSION_REF" '$3 == ref { if ($2 != "commit" || NF != 3) exit 1; print $1 }') || exit 0
+        else
+            parent=$(git rev-parse -q --verify "$SESSION_REF" 2>/dev/null || true)
+        fi
         if [ -n "$parent" ] \
             && [ "$(git rev-parse "$parent^{tree}" 2>/dev/null)" = "$tree" ] \
-            && [ "$(git show -s --format=%B "$parent" | sed -n 's/^cs-base: //p')" = "$base" ]; then
+            && parent_msg=$(git show -s --format=%B "$parent") \
+            && [ "$(printf '%s\n' "$parent_msg" | sed -n 's/^cs-base: //p')" = "$base" ] \
+            && { [ -z "$RECOVERY_RUN" ] || [ "$(printf '%s\n' "$parent_msg" | sed -n 's/^cs-run: //p')" = "$RECOVERY_RUN" ]; }; then
             exit 0
         fi
         if [ -n "$parent" ]; then
@@ -228,17 +266,17 @@ cs-base: $base"
             commit=$(printf '%s\n' "$msg" | git commit-tree "$tree" 2>/dev/null) || exit 0
         fi
 
-        git update-ref "$SESSION_REF" "$commit" 2>/dev/null || exit 0
-
-        if [ -n "$LATEST_ENTRY" ]; then
-            if LOG_DIR=$(cs_private_dir "$META_DIR"); then
-                cs_append_inside "$LOG_DIR/session.log" echo "[$TIMESTAMP] Autosave: $LATEST_ENTRY" || true
-            fi
+        if [ -n "$RECOVERY_RUN" ]; then
+            # Staging may take seconds. Hold the lease only to recheck ownership
+            # and publish the ref, so unrelated callbacks can use it meanwhile.
+            cs_run_with_lease "$META_DIR" _publish_autosave "$commit" "$parent" "$base" || exit 0
+        else
+            _publish_autosave "$commit" "$parent" "$base" || exit 0
         fi
     )
 }
 
-if [ "${CS_TEST_SYNC:-}" = "1" ]; then
+if [ -n "$RECOVERY_RUN" ] || [ "${CS_TEST_SYNC:-}" = "1" ]; then
     autosave_to_shadow_ref
 else
     autosave_to_shadow_ref &

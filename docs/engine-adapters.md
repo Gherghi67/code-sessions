@@ -396,10 +396,11 @@ and the `rotated` event either path records leaves the name out.
 
 ## Completed file changes and recovery copies
 
-Both adapters normalize completed file edits in `lib/25-engine-events.sh`:
-Claude translates each successful `Write` or `Edit`; Codex translates a
+The adapters normalize completed file edits in `lib/25-engine-events.sh`.
+Claude translates each successful `Write` or `Edit`. Codex translates a
 successful `apply_patch` PostToolUse report into one event containing every
-added, updated, deleted, and moved path (both sides of a rename).
+added, updated, deleted, and moved path (both sides of a rename). Antigravity
+translates each successful `write_file` or `edit_file` PostToolUse report.
 
 ```json
 {"type":"files_changed","engine":"codex","session_id":"<native UUID>","cwd":"/workspace","files":["login.ts","users.ts"]}
@@ -421,5 +422,7 @@ uninstall. Where `agy` is installed it deploys the same files to the
 `scripts/` folder of cs's Antigravity plugin, whose PostToolUse hook
 (`cs -antigravity-hook post-tool-use`) feeds them. Build generates `hooks/cs-engine-events.sh` from the adapter registry
 and translators so standalone hooks and the assembled command use one contract.
-Claude's SessionStart recovery prompt remains available.
-Codex and Antigravity snapshots can be inspected through their shadow ref.
+Claude offers recovery during SessionStart. Codex autosaves can be inspected
+through their shadow ref. Antigravity offers a recovery copy on interactive reopen
+of the same conversation in the same worktree after an interrupted managed run.
+See [Antigravity recovery copies](antigravity.md#recovery-copies).
