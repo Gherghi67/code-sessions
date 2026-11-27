@@ -107,6 +107,7 @@ _cs_run_cleanup() {
 
 _cs_run_signal() {  # exit_status
     trap '' INT TERM
+    _cs_run_interrupted=1
     _cs_run_cleanup
     exit "$1"
 }
@@ -195,6 +196,7 @@ cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent, 
     [ -z "$remote_mode" ] || [ "$engine" = claude ] || { printf 'Error: --remote requires --engine claude\n' >&2; return 1; }
     local _cs_run_meta="$directory/.cs" _cs_run_active=0 _cs_run_child_pid="" _cs_run_gate="" _cs_run_helper_pid=""
     local _cs_run_helper_dir="" _cs_run_name="$name"
+    local _cs_run_interrupted=""
     local _cs_run_skip_engine_record=""
     local _cs_run_carry_preview_dir="" _cs_run_carry_preview_id=""
     local _cs_run_carry_vault_file="" _cs_run_carry_vault_parent_id=""

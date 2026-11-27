@@ -2121,7 +2121,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "c5dfd7740bea70e38531d5fbc96484205cab89ecec977cb6ec6d77f19160d4ab  bin/cs"
+    "17247c90ff41ad3efe4b7b972a0d82f9daea26bfe874b2a466c4d641053364f4  bin/cs"
     "daa73d86fbf428a84f5ef4c1f8fa355d6295c056dbc690eb2e433a8ff03f8437  bin/cs-secrets"
     "01d3b8a95bb19f7414ffc7e9870f34df996d0da23210e53e603c8bec49a61983  bin/cs-codex-thread"
     "92fbf3b94c270ac607ea8796e826b95d7a062b25cbced9bf1004ff9516224775  bin/cs-statusline"
@@ -2136,7 +2136,7 @@ CS_PAYLOAD_SHA256=(
     "dd6e555242f0161cdb832249a491a41babe407da745a7ca0b30d9780d045a680  hooks/prompt-rewriter-model.sh"
     "b3704bde599a45a4f2d2a8b0ccd16e01869ef7ba6dcc85e642e306448ded7d44  hooks/prompt-rewriter-vendor.sh"
     "4ab3304e03530d5ee8625f8e51f097480875a67d336cd9b761aa995f5f689042  hooks/session-start.sh"
-    "e0a2562432ed9b7b63f73fdb3fd858a3f86b225063c3f62c4ec886a30ecc4c51  hooks/autosave-commits.sh"
+    "88020f0761e51b5e3c7f7433622fd372c685501d4a8d3eecfbada10e7a48f518  hooks/autosave-commits.sh"
     "78bb4f1fa0c7640bd977a21a0155e27a2bde126741dee27eaff7dc82fa60ad5e  hooks/stop-blocks.sh"
     "cc02791505cd805aee3965ce7c722c8b7b1e181ec79f849061341e915aed65f3  hooks/stop-notices.sh"
     "3a6052ed62bf9e16dbab777108ec1a2361ab88fee562d0da02b784698c16fa88  hooks/session-end.sh"

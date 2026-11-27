@@ -263,6 +263,7 @@ if [ -z "${AGY_NO_TURN:-}" ]; then
     fi
     mail_comes "$@"
     [ $# -eq 0 ] || shift
+    [ -z "${AGY_RECOVERY_DELETE:-}" ] || rm -- "$AGY_RECOVERY_DELETE"
     for edit in ${AGY_EDITS:-}; do
         printf 'edited\n' > "$edit"
         fire PostToolUse "$(payload "$conversation" "$(jq -nc --arg p "$edit" \
@@ -325,6 +326,11 @@ if [ -n "${AGY_RAW_SWITCH:-}" ]; then
     printf 'engine=%s\nmode=fresh\nhandoff=2026-11-05-rotate.md\nrun=%s\n' \
         "$AGY_RAW_SWITCH" "$CS_RUN_ID" > "$CS_SESSION_DIR/.cs/local/pending-switch"
 fi
+if [ "${AGY_INTERRUPT_LAUNCHER:-}" = KILL ]; then
+    kill -KILL "$CS_RUN_OWNER_PID"
+elif [ "${AGY_INTERRUPT_LAUNCHER:-}" = TERM ]; then
+    kill -TERM "$CS_RUN_OWNER_PID"
+fi
 exit "${AGY_EXIT:-0}"
 AGY
     chmod +x "$TEST_TMPDIR/bin/agy"
@@ -346,6 +352,7 @@ AGY
     unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT AGY_DOCTOR_OUT AGY_DOCTOR_VERSION AGY_LOCK_HANDOFFS AGY_CLEARED_INVOCATION AGY_DROP_CLEARED_SEEN AGY_EARLY
     unset AGY_MAIL_SUB AGY_ARM_SUB AGY_VAULT_PLANT AGY_VAULT_LINK AGY_VAULT_LINK_TO AGY_VAULT_SEEN CS_ANTIGRAVITY_SHARED_HOME VAULT_HOME
     unset AGY_BEFORE_CARRY_SUBAGENT AGY_TAMPER_VAULT_CARRY AGY_CARRY_INSPECT_DIR AGY_FIRST_STEPS AGY_IDLE_SIGNAL_READY AGY_RESUME_AT_COMPOSER CS_ASSUME_TTY
+    unset AGY_INTERRUPT_LAUNCHER AGY_RECOVERY_DELETE
     _install_agy_hook
     unset CS_DEFAULT_ENGINE CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CS_LEAD_PID CLAUDE_PID
     unset CS_RUN_ENGINE CS_RUN_ID CS_SESSION_DIR CS_SESSION_NAME CS_SESSION_META_DIR
@@ -3454,6 +3461,159 @@ test_edits_in_a_run_are_autosaved_for_recovery() {
         "agy's write reaches the conversation's recovery ref"
 }
 
+_recovery_checkout() {  # session name
+    local dir output
+    output=$(AGY_NO_TURN=1 "$CS_BIN" "$1" --engine antigravity 2>&1) || { echo "$output" >&2; return 1; }
+    dir=$(_session_dir "$1")
+    git -C "$dir" init -q || return 1
+    git -C "$dir" config user.name Fixture && git -C "$dir" config user.email fixture@example.com || return 1
+    printf 'base\n' > "$dir/existing.txt"
+    printf 'unrelated\n' > "$dir/unrelated.txt"
+    git -C "$dir" add -- existing.txt unrelated.txt && git -C "$dir" commit -qm base || return 1
+    printf '%s\n' "$dir"
+}
+
+test_recovery_restores_the_interrupted_run_before_agy() {
+    local dir output status=0 ref="refs/worktree/cs/antigravity-recovery/$AGY_NEW_ID"
+    dir=$(_recovery_checkout restore) || return 1
+    printf 'remove me\n' > "$dir/deleted.txt"
+    git -C "$dir" add deleted.txt && git -C "$dir" commit -qm 'tracked deletion fixture' || return 1
+    output=$(AGY_INTERRUPT_LAUNCHER=KILL AGY_RECOVERY_DELETE="$dir/deleted.txt" \
+        AGY_EDITS="$dir/existing.txt $dir/added.txt $dir/already.txt" "$CS_BIN" restore 2>&1) || status=$?
+    assert_eq 137 "$status" "the fixture killed the launcher" || return 1
+    assert_file_exists "$dir/.cs/local/run-lease.json" "the abandoned lease is still on disk" || return 1
+    git -C "$dir" restore -- existing.txt deleted.txt && rm -- "$dir/added.txt" || return 1
+    printf 'staged\n' > "$dir/unrelated.txt"
+    git -C "$dir" add unrelated.txt || return 1
+    printf 'working\n' > "$dir/unrelated.txt"
+    output=$(printf r | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" restore --resume 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" 'Antigravity crash recovery' || return 1
+    assert_output_contains "$output" 'Restored the Antigravity snapshot' || return 1
+    assert_eq edited "$(cat "$dir/existing.txt")" "restores tracked file" || return 1
+    assert_eq edited "$(cat "$dir/added.txt")" "restores untracked file" || return 1
+    assert_eq edited "$(cat "$dir/already.txt")" "keeps an untracked file already present as saved" || return 1
+    assert_not_exists "$dir/deleted.txt" "restores a saved deletion" || return 1
+    assert_eq working "$(cat "$dir/unrelated.txt")" "preserves unrelated working changes" || return 1
+    assert_eq unrelated.txt "$(git -C "$dir" diff --cached --name-only)" "preserves the real index" || return 1
+    assert_eq "" "$(git -C "$dir" rev-parse -q --verify "$ref" || true)" "clears the recovery offer" || return 1
+    assert_eq "--conversation $AGY_NEW_ID" "$(_agy_argv)" "agy still resumes the same conversation"
+}
+
+test_recovery_keeps_a_failed_run_copy_until_explicit_discard() {
+    local dir output status=0 ref="refs/worktree/cs/antigravity-recovery/$AGY_NEW_ID" oid
+    dir=$(_recovery_checkout keep) || return 1
+    output=$(AGY_EXIT=1 AGY_EDITS="$dir/existing.txt" "$CS_BIN" keep 2>&1) || status=$?
+    assert_eq 1 "$status" "the native failure is returned" || return 1
+    oid=$(git -C "$dir" rev-parse --verify "$ref") || return 1
+    output=$(printf '\n' | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" keep --resume 2>&1) || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" 'Antigravity crash recovery' "the saved edit is already on disk" || return 1
+    git -C "$dir" restore -- existing.txt || return 1
+    output=$(AGY_NO_TURN=1 "$CS_BIN" keep --resume </dev/null 2>&1) || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" 'Antigravity crash recovery' "an unattended reopen is silent" || return 1
+    output=$(printf '\n' | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" keep --resume 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" 'Enter=keep for later' || return 1
+    assert_eq base "$(cat "$dir/existing.txt")" "keep leaves the working file alone" || return 1
+    output=$(printf v | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" keep --resume 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "$oid" "review pins the saved commit" || return 1
+    assert_eq "$oid" "$(git -C "$dir" rev-parse --verify "$ref")" "review and later clean exits retain the saved copy" || return 1
+    output=$(printf d | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" keep --resume 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" 'Discarded the Antigravity recovery copy' || return 1
+    assert_eq "" "$(git -C "$dir" for-each-ref --format='%(refname)' "$ref" "refs/worktree/cs/session/$AGY_NEW_ID")" \
+        "discard removes the selected copy and matching autosave"
+}
+
+test_recovery_ignores_clean_legacy_and_other_conversations_or_worktrees() {
+    local dir output status=0 other=44444444-4444-4444-8444-444444444444 ref="refs/worktree/cs/antigravity-recovery/$AGY_NEW_ID"
+    local autosave="refs/worktree/cs/session/$AGY_NEW_ID" tree legacy
+    dir=$(_recovery_checkout scoped) || return 1
+    output=$(AGY_EDITS="$dir/existing.txt" "$CS_BIN" scoped 2>&1) || { echo "$output"; return 1; }
+    git -C "$dir" restore -- existing.txt || return 1
+    output=$(AGY_EXIT=1 "$CS_BIN" scoped --resume 2>&1) || status=$?
+    assert_eq 1 "$status" "an interrupted run with no snapshot cannot claim the clean run's snapshot" || return 1
+    output=$(printf r | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" scoped --resume 2>&1) || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" 'Antigravity crash recovery' || return 1
+    assert_eq base "$(cat "$dir/existing.txt")" || return 1
+    tree=$(git -C "$dir" rev-parse "$autosave^{tree}") || return 1
+    legacy=$(git -C "$dir" commit-tree "$tree" -m 'old autosave') || return 1
+    git -C "$dir" update-ref "$autosave" "$legacy" || return 1
+    status=0
+    output=$(AGY_EXIT=1 "$CS_BIN" scoped --resume 2>&1) || status=$?
+    assert_eq 1 "$status" || return 1
+    assert_eq "" "$(git -C "$dir" rev-parse --quiet --verify "$ref" || true)" "legacy autosaves remain manual" || return 1
+    status=0
+    output=$(AGY_INTERRUPT_LAUNCHER=TERM AGY_EDITS="$dir/existing.txt" "$CS_BIN" scoped --resume 2>&1) || status=$?
+    assert_eq 143 "$status" "the managed launcher ran signal cleanup" || return 1
+    assert_not_exists "$dir/.cs/local/run-lease.json" "signal cleanup releases the lease" || return 1
+    git -C "$dir" restore -- existing.txt || return 1
+    output=$(printf r | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" scoped --resume-conversation "$other" 2>&1) || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" 'Antigravity crash recovery' || return 1
+    output=$(printf n | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" scoped 2>&1) || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" 'Antigravity crash recovery' "fresh conversation excludes the offer" || return 1
+    output=$("$CS_BIN" scoped@sibling --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    output=$(printf r | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" scoped@sibling --resume 2>&1) || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" 'Antigravity crash recovery' "a linked worktree uses its own refs" || return 1
+    git -C "$dir" rev-parse --verify "$ref" >/dev/null
+}
+
+_answer_recovery_after() {  # output file, command, arguments...
+    local log="$1" attempts=0
+    shift
+    until grep -q 'r=restore' "$log" 2>/dev/null || [ "$attempts" -eq 200 ]; do
+        sleep 0.05
+        attempts=$((attempts + 1))
+    done
+    [ "$attempts" -lt 200 ] && "$@" && printf r
+}
+
+test_recovery_refuses_conflicts_and_rechecks_head_after_preview() {
+    local dir output status=0 log oid ref="refs/worktree/cs/antigravity-recovery/$AGY_NEW_ID"
+    dir=$(_recovery_checkout conflict) || return 1
+    output=$(AGY_EXIT=1 AGY_EDITS="$dir/existing.txt $dir/added.txt" "$CS_BIN" conflict 2>&1) || status=$?
+    assert_eq 1 "$status" || return 1
+    printf 'my staged work\n' > "$dir/existing.txt"
+    git -C "$dir" add existing.txt || return 1
+    printf 'base\n' > "$dir/existing.txt"
+    rm -- "$dir/added.txt" || return 1
+    output=$(printf r | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" conflict --resume 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" 'Could not restore the Antigravity snapshot safely' || return 1
+    assert_eq 'my staged work' "$(git -C "$dir" show :existing.txt)" || return 1
+    git -C "$dir" restore --staged -- existing.txt || return 1
+    printf 'my working copy\n' > "$dir/existing.txt"
+    output=$(printf r | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" conflict --resume 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" 'Could not restore the Antigravity snapshot safely' || return 1
+    assert_eq 'my working copy' "$(cat "$dir/existing.txt")" || return 1
+    assert_not_exists "$dir/added.txt" "a conflicting restore does not write the other files" || return 1
+    git -C "$dir" restore -- existing.txt || return 1
+    log="$TEST_TMPDIR/waiting-for-recovery"
+    oid=$(git -C "$dir" rev-parse --verify "$ref") || return 1
+    _answer_recovery_after "$log" git -C "$dir" update-ref "$ref" HEAD "$oid" \
+        | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" conflict --resume > "$log" 2>&1 || { cat "$log"; return 1; }
+    assert_output_contains "$(cat "$log")" 'Could not restore the Antigravity snapshot safely' || return 1
+    assert_not_exists "$dir/added.txt" "an offer cannot restore a replaced snapshot" || return 1
+    git -C "$dir" update-ref "$ref" "$oid" HEAD || return 1
+    _answer_recovery_after "$log" git -C "$dir" commit -qm 'moved HEAD' --allow-empty \
+        | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" conflict --resume > "$log" 2>&1 || { cat "$log"; return 1; }
+    assert_output_contains "$(cat "$log")" 'Could not restore the Antigravity snapshot safely' || return 1
+    output=$(printf v | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" conflict --resume 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" 'HEAD changed since the snapshot' || return 1
+    assert_output_not_contains "$output" 'r=restore' || return 1
+    assert_not_exists "$dir/added.txt"
+}
+
+test_recovery_offers_review_for_a_snapshot_without_a_base() {
+    local dir output status=0
+    dir=$(_recovery_checkout unborn) || return 1
+    git -C "$dir" symbolic-ref HEAD refs/heads/unborn && git -C "$dir" read-tree --empty || return 1
+    output=$(AGY_EXIT=1 AGY_EDITS="$dir/existing.txt" "$CS_BIN" unborn 2>&1) || status=$?
+    assert_eq 1 "$status" || return 1
+    rm -- "$dir/existing.txt" || return 1
+    output=$(printf v | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" unborn --resume 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" 'has no verifiable base' || return 1
+    assert_output_contains "$output" 'To inspect the saved patch' || return 1
+    assert_output_not_contains "$output" 'r=restore' || return 1
+    assert_not_exists "$dir/existing.txt"
+}
+
 # cs's status line as an install puts it, in an install folder of the test's
 # own (STATUSLINE_DIR, named by $1): the adapter beside cs-statusline.
 _statusline_install() {  # [folder name]
@@ -4146,6 +4306,11 @@ run_test test_a_run_started_without_the_clear_route_is_named_by_doctor_inside_it
 run_test test_doctor_names_an_agy_older_than_the_mail_was_checked_on
 run_test test_doctor_says_when_the_agy_version_cannot_be_read
 run_test test_edits_in_a_run_are_autosaved_for_recovery
+run_test test_recovery_restores_the_interrupted_run_before_agy
+run_test test_recovery_keeps_a_failed_run_copy_until_explicit_discard
+run_test test_recovery_ignores_clean_legacy_and_other_conversations_or_worktrees
+run_test test_recovery_refuses_conflicts_and_rechecks_head_after_preview
+run_test test_recovery_offers_review_for_a_snapshot_without_a_base
 run_test test_doctor_reads_back_a_quoted_cs_path
 run_test test_the_hook_never_writes_through_a_link
 run_test test_a_vault_planted_mid_run_is_neither_read_nor_written_through

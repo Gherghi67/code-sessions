@@ -64,6 +64,13 @@ fi
 # Only run in cs sessions
 cs_resolve_session "" || exit 0
 
+_UUID_RE='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+RECOVERY_RUN=""
+if [ "${1:-}" = --event ] && [ "${2:-}" = --antigravity-run ] && [[ "${3:-}" =~ $_UUID_RE ]]; then
+    RECOVERY_RUN="$3"
+    while IFS= read -r git_var; do unset "$git_var"; done < <(git rev-parse --local-env-vars)
+    export GIT_NO_REPLACE_OBJECTS=1
+fi
 SESSION_DIR="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"
 META_DIR="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-$SESSION_DIR/.cs}}"
 if [ -z "$SESSION_DIR" ] || [ ! -d "$SESSION_DIR" ]; then
@@ -115,7 +122,6 @@ done < <(printf '%s' "$INPUT" | jq -r '.files[]')
 # conversation UUID, so concurrent sessions on one checkout never share or
 # clobber each other's snapshot chain. A missing/malformed id can't key a ref.
 SESSION_UUID=$(echo "$INPUT" | jq -r '.session_id // empty')
-_UUID_RE='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 [[ "$SESSION_UUID" =~ $_UUID_RE ]] || exit 0
 SESSION_REF="refs/worktree/cs/session/$SESSION_UUID"
 
@@ -214,12 +220,20 @@ autosave_to_shadow_ref() {
         [ -n "$base" ] && msg="$msg
 
 cs-base: $base"
+        if [ -n "$RECOVERY_RUN" ]; then
+            [ -n "$base" ] || msg="$msg
+"
+            msg="$msg
+cs-run: $RECOVERY_RUN"
+        fi
 
         # Chain onto this conversation's previous autosave if it exists
         parent=$(git rev-parse -q --verify "$SESSION_REF" 2>/dev/null || true)
         if [ -n "$parent" ] \
             && [ "$(git rev-parse "$parent^{tree}" 2>/dev/null)" = "$tree" ] \
-            && [ "$(git show -s --format=%B "$parent" | sed -n 's/^cs-base: //p')" = "$base" ]; then
+            && parent_msg=$(git show -s --format=%B "$parent") \
+            && [ "$(printf '%s\n' "$parent_msg" | sed -n 's/^cs-base: //p')" = "$base" ] \
+            && { [ -z "$RECOVERY_RUN" ] || [ "$(printf '%s\n' "$parent_msg" | sed -n 's/^cs-run: //p')" = "$RECOVERY_RUN" ]; }; then
             exit 0
         fi
         if [ -n "$parent" ]; then
@@ -238,7 +252,7 @@ cs-base: $base"
     )
 }
 
-if [ "${CS_TEST_SYNC:-}" = "1" ]; then
+if [ -n "$RECOVERY_RUN" ] || [ "${CS_TEST_SYNC:-}" = "1" ]; then
     autosave_to_shadow_ref
 else
     autosave_to_shadow_ref &
