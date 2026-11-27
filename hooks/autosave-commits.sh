@@ -76,6 +76,10 @@ META_DIR="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-$SESSION_DIR/.cs}}"
 if [ -z "$SESSION_DIR" ] || [ ! -d "$SESSION_DIR" ]; then
     exit 0
 fi
+if [ -n "$RECOVERY_RUN" ]; then
+    [ "$RECOVERY_RUN" = "${CS_RUN_ID:-}" ] && [ "${CS_RUN_ENGINE:-}" = antigravity ] \
+        && cs_run_lease_owned "$META_DIR" 2>/dev/null || exit 0
+fi
 
 # Several git calls follow: run the selected Xcode's git, not the stub that
 # looks it up on every call.
@@ -149,6 +153,21 @@ case "$FILE_PATH" in
         ;;
 esac
 done < <(printf '%s' "$INPUT" | jq -r '.files[]')
+
+_publish_autosave() {  # commit, previous commit, base
+    if [ -n "$RECOVERY_RUN" ]; then
+        [ "$(git rev-parse -q --verify HEAD 2>/dev/null || true)" = "$3" ] || return 1
+        git update-ref --no-deref "$SESSION_REF" "$1" "$2" 2>/dev/null || return 1
+    else
+        git update-ref "$SESSION_REF" "$1" 2>/dev/null || return 1
+    fi
+
+    if [ -n "$LATEST_ENTRY" ]; then
+        if LOG_DIR=$(cs_private_dir "$META_DIR"); then
+            cs_append_inside "$LOG_DIR/session.log" echo "[$TIMESTAMP] Autosave: $LATEST_ENTRY" || true
+        fi
+    fi
+}
 
 # Autosave to shadow ref using git plumbing (does not touch HEAD or main branch)
 # Fires on ALL Write/Edit — protects all files, not just the narrative
@@ -228,7 +247,12 @@ cs-run: $RECOVERY_RUN"
         fi
 
         # Chain onto this conversation's previous autosave if it exists
-        parent=$(git rev-parse -q --verify "$SESSION_REF" 2>/dev/null || true)
+        if [ -n "$RECOVERY_RUN" ]; then
+            parent=$(git for-each-ref --format='%(objectname) %(objecttype) %(refname) %(symref)' "$SESSION_REF" \
+                | awk -v ref="$SESSION_REF" '$3 == ref { if ($2 != "commit" || NF != 3) exit 1; print $1 }') || exit 0
+        else
+            parent=$(git rev-parse -q --verify "$SESSION_REF" 2>/dev/null || true)
+        fi
         if [ -n "$parent" ] \
             && [ "$(git rev-parse "$parent^{tree}" 2>/dev/null)" = "$tree" ] \
             && parent_msg=$(git show -s --format=%B "$parent") \
@@ -242,12 +266,12 @@ cs-run: $RECOVERY_RUN"
             commit=$(printf '%s\n' "$msg" | git commit-tree "$tree" 2>/dev/null) || exit 0
         fi
 
-        git update-ref "$SESSION_REF" "$commit" 2>/dev/null || exit 0
-
-        if [ -n "$LATEST_ENTRY" ]; then
-            if LOG_DIR=$(cs_private_dir "$META_DIR"); then
-                cs_append_inside "$LOG_DIR/session.log" echo "[$TIMESTAMP] Autosave: $LATEST_ENTRY" || true
-            fi
+        if [ -n "$RECOVERY_RUN" ]; then
+            # Staging may take seconds. Hold the lease only to recheck ownership
+            # and publish the ref, so unrelated callbacks can use it meanwhile.
+            cs_run_with_lease "$META_DIR" _publish_autosave "$commit" "$parent" "$base" || exit 0
+        else
+            _publish_autosave "$commit" "$parent" "$base" || exit 0
         fi
     )
 }

@@ -3461,6 +3461,40 @@ test_edits_in_a_run_are_autosaved_for_recovery() {
         "agy's write reaches the conversation's recovery ref"
 }
 
+test_autosave_releases_the_lease_guard_during_staging() {
+    local dir output previous real_git status=0 ref="refs/worktree/cs/session/$AGY_NEW_ID"
+    dir=$(_recovery_checkout contested) || return 1
+    output=$(AGY_EDITS="$dir/existing.txt" "$CS_BIN" contested 2>&1) || { echo "$output"; return 1; }
+    previous=$(git -C "$dir" show-ref --verify --hash "$ref") || return 1
+    real_git=$(command -v git) || return 1
+    cat > "$TEST_TMPDIR/successor" <<'SUCCESSOR'
+#!/usr/bin/env bash
+source "$RECOVERY_TEST_SHARED"
+takeover() {
+    local lease="$CS_SESSION_META_DIR/local/run-lease.json"
+    jq '.run_id = "99999999-9999-4999-8999-999999999999"' "$lease" > "$lease.next" \
+        && mv "$lease.next" "$lease" && touch "$RECOVERY_TEST_MARKER"
+}
+cs_run_guarded "$CS_SESSION_META_DIR" takeover
+SUCCESSOR
+    cat > "$TEST_TMPDIR/bin/git" <<'GIT'
+#!/usr/bin/env bash
+if [ "${1:-}" = add ] && [ "${2:-}" = -A ] && [ -n "${GIT_INDEX_FILE:-}" ]; then
+    bash "$RECOVERY_TEST_SUCCESSOR" || true
+fi
+exec "$RECOVERY_TEST_GIT" "$@"
+GIT
+    chmod +x "$TEST_TMPDIR/bin/git"
+    output=$(AGY_EDITS="$dir/new.txt" RECOVERY_TEST_GIT="$real_git" RECOVERY_TEST_SUCCESSOR="$TEST_TMPDIR/successor" \
+        RECOVERY_TEST_SHARED="$SCRIPT_DIR/../hooks/cs-shared.sh" RECOVERY_TEST_MARKER="$TEST_TMPDIR/takeover" \
+        "$CS_BIN" contested --resume 2>&1) || status=$?
+    assert_eq "$previous" "$("$real_git" -C "$dir" show-ref --verify --hash "$ref")" \
+        "a hook that lost the lease during staging cannot publish over the previous autosave" || { echo "$output"; return 1; }
+    assert_file_exists "$TEST_TMPDIR/takeover" "a successor acquired the guard during git add" || return 1
+    assert_eq edited "$(cat "$dir/new.txt")" "the tool edit itself still happened" || return 1
+    assert_eq 1 "$status" "the old launcher no longer owns the session"
+}
+
 _recovery_checkout() {  # session name
     local dir output
     output=$(AGY_NO_TURN=1 "$CS_BIN" "$1" --engine antigravity 2>&1) || { echo "$output" >&2; return 1; }
@@ -4440,6 +4474,7 @@ run_test test_a_run_started_without_the_clear_route_is_named_by_doctor_inside_it
 run_test test_doctor_names_an_agy_older_than_the_mail_was_checked_on
 run_test test_doctor_says_when_the_agy_version_cannot_be_read
 run_test test_edits_in_a_run_are_autosaved_for_recovery
+run_test test_autosave_releases_the_lease_guard_during_staging
 run_test test_recovery_restores_the_interrupted_run_before_agy
 run_test test_recovery_keeps_a_failed_run_copy_until_explicit_discard
 run_test test_recovery_ignores_shared_and_symbolic_snapshot_names

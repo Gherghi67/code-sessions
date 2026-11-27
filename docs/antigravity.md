@@ -970,6 +970,8 @@ empty `error`. The hook turns each such edit into the shared `files_changed`
 event (`_cs_antigravity_adapter_files_changed` in `lib/25-engine-events.sh`).
 The recovery consumer then snapshots it to
 `refs/worktree/cs/session/<conversation id>`, as it does for Claude and Codex.
+If staging outlasts the hook's 10-second limit, or the run loses its lease
+before it can publish, the previous autosave remains available.
 An edit a shell command makes through `run_command` names no file, so it is
 not snapshotted. The same is true of shell edits under the other engines.
 

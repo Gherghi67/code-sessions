@@ -28359,10 +28359,9 @@ _antigravity_hook_post_tool_use() {  # payload
     [ -n "$event" ] || return 0
     script="$(_antigravity_plugin_dir)/scripts/autosave-commits.sh"
     [ -r "$script" ] || return 0
-    # Finish publishing before the native child can exit. The guard also
-    # prevents an orphaned hook from publishing past a successor's takeover.
-    printf '%s' "$event" | cs_run_with_lease "$CS_SESSION_DIR/.cs" \
-        bash "$script" --event --antigravity-run "$CS_RUN_ID" || true
+    # Finish publishing before the native child can exit. The consumer
+    # rechecks the lease under the guard only when publishing the ref.
+    printf '%s' "$event" | bash "$script" --event --antigravity-run "$CS_RUN_ID" || true
 }
 
 # Mail, measured on agy 1.5.8. A PreInvocation answer
