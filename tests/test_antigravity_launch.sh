@@ -3600,6 +3600,20 @@ test_recovery_refuses_conflicts_and_rechecks_head_after_preview() {
     assert_not_exists "$dir/added.txt"
 }
 
+test_recovery_refusal_preserves_an_unstaged_deletion() {
+    local dir output status=0 ref="refs/worktree/cs/antigravity-recovery/$AGY_NEW_ID"
+    dir=$(_recovery_checkout missing) || return 1
+    output=$(AGY_EXIT=1 AGY_EDITS="$dir/existing.txt $dir/unrelated.txt" "$CS_BIN" missing 2>&1) || status=$?
+    assert_eq 1 "$status" || return 1
+    rm -- "$dir/existing.txt" || return 1
+    printf 'local conflict\n' > "$dir/unrelated.txt"
+    output=$(printf r | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" missing --resume 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" 'Could not restore the Antigravity snapshot safely' || return 1
+    assert_not_exists "$dir/existing.txt" "a refused restore must leave the local deletion alone" || return 1
+    assert_eq 'local conflict' "$(cat "$dir/unrelated.txt")" || return 1
+    git -C "$dir" show-ref --verify --quiet "$ref"
+}
+
 test_recovery_offers_review_for_a_snapshot_without_a_base() {
     local dir output status=0
     dir=$(_recovery_checkout unborn) || return 1
@@ -4310,6 +4324,7 @@ run_test test_recovery_restores_the_interrupted_run_before_agy
 run_test test_recovery_keeps_a_failed_run_copy_until_explicit_discard
 run_test test_recovery_ignores_clean_legacy_and_other_conversations_or_worktrees
 run_test test_recovery_refuses_conflicts_and_rechecks_head_after_preview
+run_test test_recovery_refusal_preserves_an_unstaged_deletion
 run_test test_recovery_offers_review_for_a_snapshot_without_a_base
 run_test test_doctor_reads_back_a_quoted_cs_path
 run_test test_the_hook_never_writes_through_a_link

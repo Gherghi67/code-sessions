@@ -26104,13 +26104,13 @@ _antigravity_recovery_patch() {  # directory, base, snapshot commit
 }
 
 # Skip files already on disk as saved. For the rest, check staged changes
-# against the base and let git apply verify the full working-tree preimage
-# against a temporary base index, leaving the real index alone.
+# and working-tree changes against the base. Apply only to the worktree:
+# apply --index can check out a locally deleted file even with --check.
 _antigravity_recovery_restore() (  # directory, ref, snapshot commit, base
     local dir="$1" ref="$2" oid="$3" base="$4" temp var change file
     local -a saved=() deleted=() paths=()
     local -a git_options=(-c core.hooksPath=/dev/null -c core.fsmonitor= -c core.splitIndex=false \
-        -c core.sparseCheckout=false -c apply.ignoreWhitespace=no -c apply.whitespace=nowarn)
+        -c core.sparseCheckout=false -c core.fileMode=true -c apply.ignoreWhitespace=no -c apply.whitespace=nowarn)
     [ "$(_antigravity_recovery_base "$dir" "$oid")" = "$base" ] \
         && [ "$(_antigravity_recovery_tip "$dir" "$ref")" = "$oid" ] \
         && [ "$(_antigravity_recovery_tip "$dir" HEAD)" = "$base" ] || return 1
@@ -26145,12 +26145,13 @@ _antigravity_recovery_restore() (  # directory, ref, snapshot commit, base
     export GIT_INDEX_FILE="$temp/base-index"
     git "${git_options[@]}" read-tree "$base" || return 1
     git "${git_options[@]}" update-index -q --refresh >/dev/null || return 1
-    git "${git_options[@]}" apply --check --index "$temp/patch" || return 1
+    git "${git_options[@]}" --literal-pathspecs diff-files --quiet -- "${paths[@]}" || return 1
+    git "${git_options[@]}" apply --check "$temp/patch" || return 1
     [ "$(_antigravity_recovery_tip "$dir" HEAD)" = "$base" ] \
         && [ "$(_antigravity_recovery_tip "$dir" "$ref")" = "$oid" ] \
         && _cs_git_at "$dir" --literal-pathspecs diff --cached --quiet --ignore-submodules=none \
             "$base" -- "${paths[@]}" || return 1
-    git "${git_options[@]}" apply --index "$temp/patch" || return 1
+    git "${git_options[@]}" apply "$temp/patch" || return 1
     _cs_git_at "$dir" update-ref -d "$ref" "$oid" \
         || warn 'The files were restored. The recovery copy is still available.'
 )
