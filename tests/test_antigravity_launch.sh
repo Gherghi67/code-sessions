@@ -3522,6 +3522,64 @@ test_recovery_keeps_a_failed_run_copy_until_explicit_discard() {
         "discard removes the selected copy and matching autosave"
 }
 
+test_recovery_ignores_shared_and_symbolic_snapshot_names() {
+    local dir output oid ref="refs/worktree/cs/antigravity-recovery/$AGY_NEW_ID"
+    dir=$(_recovery_checkout collisions) || return 1
+    output=$(AGY_EDITS="$dir/existing.txt" "$CS_BIN" collisions 2>&1) || { echo "$output"; return 1; }
+    oid=$(git -C "$dir" show-ref --verify --hash "refs/worktree/cs/session/$AGY_NEW_ID") || return 1
+    git -C "$dir" tag "$ref" "$oid" && git -C "$dir" restore -- existing.txt || return 1
+    output=$(printf r | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" collisions --resume 2>&1) || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" 'Antigravity crash recovery' "a shared tag cannot stand in for a missing recovery ref" || return 1
+    assert_eq base "$(cat "$dir/existing.txt")" || return 1
+    git -C "$dir" symbolic-ref "$ref" "refs/tags/$ref" || return 1
+    output=$(printf r | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" collisions --resume 2>&1) || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" 'Antigravity crash recovery' "an indirect recovery ref does not open an offer"
+}
+
+test_recovery_promotion_does_not_move_a_symbolic_refs_target() {
+    local dir output status=0 base oid ref="refs/worktree/cs/antigravity-recovery/$AGY_NEW_ID"
+    dir=$(_recovery_checkout promote) || return 1
+    base=$(git -C "$dir" rev-parse HEAD) || return 1
+    git -C "$dir" update-ref refs/heads/keep-me "$base" || return 1
+    git -C "$dir" symbolic-ref "$ref" refs/heads/keep-me || return 1
+    output=$(AGY_EXIT=1 AGY_EDITS="$dir/existing.txt" "$CS_BIN" promote 2>&1) || status=$?
+    assert_eq 1 "$status" || return 1
+    assert_eq "$base" "$(git -C "$dir" show-ref --verify --hash refs/heads/keep-me)" "promotion leaves the branch tip alone" || return 1
+    assert_eq "" "$(git -C "$dir" symbolic-ref -q "$ref" || true)" "promotion installs a direct recovery ref" || return 1
+    oid=$(git -C "$dir" show-ref --verify --hash "refs/worktree/cs/session/$AGY_NEW_ID") || return 1
+    assert_eq "$oid" "$(git -C "$dir" show-ref --verify --hash "$ref")"
+}
+
+test_recovery_promotion_ignores_a_symbolic_autosave() {
+    local dir output status=0 oid autosave="refs/worktree/cs/session/$AGY_NEW_ID"
+    dir=$(_recovery_checkout indirect) || return 1
+    output=$(AGY_INTERRUPT_LAUNCHER=KILL AGY_EDITS="$dir/existing.txt" "$CS_BIN" indirect 2>&1) || status=$?
+    assert_eq 137 "$status" || return 1
+    oid=$(git -C "$dir" show-ref --verify --hash "$autosave") || return 1
+    git -C "$dir" update-ref refs/heads/keep-me "$oid" || return 1
+    git -C "$dir" symbolic-ref "$autosave" refs/heads/keep-me || return 1
+    git -C "$dir" restore -- existing.txt || return 1
+    output=$(printf r | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" indirect --resume 2>&1) || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" 'Antigravity crash recovery' "an indirect autosave cannot be promoted"
+}
+
+test_recovery_discard_keeps_a_symbolic_autosave_and_its_target() {
+    local dir output status=0 oid ref="refs/worktree/cs/antigravity-recovery/$AGY_NEW_ID"
+    local autosave="refs/worktree/cs/session/$AGY_NEW_ID"
+    dir=$(_recovery_checkout discard) || return 1
+    output=$(AGY_EXIT=1 AGY_EDITS="$dir/existing.txt" "$CS_BIN" discard 2>&1) || status=$?
+    assert_eq 1 "$status" || return 1
+    oid=$(git -C "$dir" show-ref --verify --hash "$ref") || return 1
+    git -C "$dir" update-ref refs/heads/keep-me "$oid" || return 1
+    git -C "$dir" symbolic-ref "$autosave" refs/heads/keep-me || return 1
+    git -C "$dir" restore -- existing.txt || return 1
+    output=$(printf d | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" discard --resume 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" 'Discarded the Antigravity recovery copy' || return 1
+    assert_eq "" "$(git -C "$dir" for-each-ref --format='%(refname)' "$ref")" || return 1
+    assert_eq "$oid" "$(git -C "$dir" show-ref --verify --hash refs/heads/keep-me)" "discard leaves the branch tip alone" || return 1
+    assert_eq refs/heads/keep-me "$(git -C "$dir" symbolic-ref "$autosave")" "discard leaves the indirect autosave alone"
+}
+
 test_recovery_ignores_clean_legacy_and_other_conversations_or_worktrees() {
     local dir output status=0 other=44444444-4444-4444-8444-444444444444 ref="refs/worktree/cs/antigravity-recovery/$AGY_NEW_ID"
     local autosave="refs/worktree/cs/session/$AGY_NEW_ID" tree legacy
@@ -4322,6 +4380,10 @@ run_test test_doctor_says_when_the_agy_version_cannot_be_read
 run_test test_edits_in_a_run_are_autosaved_for_recovery
 run_test test_recovery_restores_the_interrupted_run_before_agy
 run_test test_recovery_keeps_a_failed_run_copy_until_explicit_discard
+run_test test_recovery_ignores_shared_and_symbolic_snapshot_names
+run_test test_recovery_promotion_does_not_move_a_symbolic_refs_target
+run_test test_recovery_promotion_ignores_a_symbolic_autosave
+run_test test_recovery_discard_keeps_a_symbolic_autosave_and_its_target
 run_test test_recovery_ignores_clean_legacy_and_other_conversations_or_worktrees
 run_test test_recovery_refuses_conflicts_and_rechecks_head_after_preview
 run_test test_recovery_refusal_preserves_an_unstaged_deletion

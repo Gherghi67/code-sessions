@@ -26070,7 +26070,7 @@ _antigravity_queue_tool_failure() {  # payload
 # child, or a managed run whose child was interrupted, is evidence a run did
 # not finish cleanly. Old autosave refs have no run trailer and cannot prove it.
 _antigravity_recovery_record_interruption() {  # meta_dir
-    local meta="$1" dir="${1%/.cs}" lease="$1/local/run-lease.json" owner run oid ref saved_run
+    local meta="$1" dir="${1%/.cs}" lease="$1/local/run-lease.json" owner run oid type ref target saved_run id
     local GIT_NO_REPLACE_OBJECTS=1
     export GIT_NO_REPLACE_OBJECTS
     [ -f "$meta/session.lock" ] && [ ! -L "$meta/session.lock" ] && [ -f "$lease" ] && [ ! -L "$lease" ] || return 0
@@ -26081,14 +26081,28 @@ _antigravity_recovery_record_interruption() {  # meta_dir
 
     local snapshots
     snapshots=$(_cs_git_at "$dir" for-each-ref \
-        --format='%(objectname) %(refname) %(trailers:key=cs-run,valueonly,unfold)' refs/worktree/cs/session/ 2>/dev/null) || return 0
-    while IFS=' ' read -r oid ref saved_run; do
-        [ "$saved_run" = "$run" ] && _is_uuid "${ref##*/}" || continue
-        _cs_git_at "$dir" update-ref "refs/worktree/cs/antigravity-recovery/${ref##*/}" "$oid" || return 1
+        --format='%(objectname) %(objecttype) %(refname) target:%(symref) %(trailers:key=cs-run,valueonly,unfold,separator=%x20)' \
+        refs/worktree/cs/session/ 2>/dev/null) || return 0
+    while IFS=' ' read -r oid type ref target saved_run; do
+        id="${ref##*/}"
+        [ "$saved_run" = "$run" ] && [ "$type" = commit ] && [ "$target" = target: ] \
+            && [ "$ref" = "refs/worktree/cs/session/$id" ] && _is_uuid "$id" || continue
+        _cs_git_at "$dir" update-ref --no-deref "refs/worktree/cs/antigravity-recovery/$id" "$oid" || return 1
     done < <(printf '%s\n' "$snapshots")
 }
 
 _antigravity_recovery_tip() {  # directory, ref
+    local refs oid type ref target
+    refs=$(_cs_git_at "$1" for-each-ref --format='%(objectname) %(objecttype) %(refname) %(symref)' "$2") || return 1
+    while IFS=' ' read -r oid type ref target; do
+        [ "$ref" = "$2" ] && [ "$type" = commit ] && [ -z "$target" ] || continue
+        printf '%s\n' "$oid"
+        return 0
+    done < <(printf '%s\n' "$refs")
+    return 1
+}
+
+_antigravity_recovery_commit() {  # directory, revision
     _cs_git_at "$1" rev-parse --verify --quiet "$2^{commit}"
 }
 
@@ -26113,7 +26127,7 @@ _antigravity_recovery_restore() (  # directory, ref, snapshot commit, base
         -c core.sparseCheckout=false -c core.fileMode=true -c apply.ignoreWhitespace=no -c apply.whitespace=nowarn)
     [ "$(_antigravity_recovery_base "$dir" "$oid")" = "$base" ] \
         && [ "$(_antigravity_recovery_tip "$dir" "$ref")" = "$oid" ] \
-        && [ "$(_antigravity_recovery_tip "$dir" HEAD)" = "$base" ] || return 1
+        && [ "$(_antigravity_recovery_commit "$dir" HEAD)" = "$base" ] || return 1
     temp=$(mktemp -d "${TMPDIR:-/tmp}/cs-agy-recovery.XXXXXX") || return 1
     trap 'rm -rf -- "$temp"' EXIT
     _cs_git_at "$dir" diff --raw -z --no-renames --ignore-submodules=none "$base" "$oid" -- > "$temp/paths" || return 1
@@ -26147,12 +26161,12 @@ _antigravity_recovery_restore() (  # directory, ref, snapshot commit, base
     git "${git_options[@]}" update-index -q --refresh >/dev/null || return 1
     git "${git_options[@]}" --literal-pathspecs diff-files --quiet -- "${paths[@]}" || return 1
     git "${git_options[@]}" apply --check "$temp/patch" || return 1
-    [ "$(_antigravity_recovery_tip "$dir" HEAD)" = "$base" ] \
+    [ "$(_antigravity_recovery_commit "$dir" HEAD)" = "$base" ] \
         && [ "$(_antigravity_recovery_tip "$dir" "$ref")" = "$oid" ] \
         && _cs_git_at "$dir" --literal-pathspecs diff --cached --quiet --ignore-submodules=none \
             "$base" -- "${paths[@]}" || return 1
     git "${git_options[@]}" apply "$temp/patch" || return 1
-    _cs_git_at "$dir" update-ref -d "$ref" "$oid" \
+    _cs_git_at "$dir" update-ref --no-deref -d "$ref" "$oid" \
         || warn 'The files were restored. The recovery copy is still available.'
 )
 
@@ -26162,11 +26176,12 @@ _antigravity_recovery_review() {  # directory, comparison commit, snapshot commi
 
 _antigravity_recovery_discard() {  # directory, recovery ref, snapshot commit, conversation id
     local dir="$1" ref="$2" oid="$3" autosave="refs/worktree/cs/session/$4"
+    [ "$(_antigravity_recovery_tip "$dir" "$ref")" = "$oid" ] || return 1
     if [ "$(_antigravity_recovery_tip "$dir" "$autosave")" = "$oid" ]; then
         printf 'delete %s %s\ndelete %s %s\n' "$ref" "$oid" "$autosave" "$oid" \
-            | _cs_git_at "$dir" update-ref --stdin
+            | _cs_git_at "$dir" update-ref --no-deref --stdin
     else
-        _cs_git_at "$dir" update-ref -d "$ref" "$oid"
+        _cs_git_at "$dir" update-ref --no-deref -d "$ref" "$oid"
     fi
 }
 
@@ -26178,10 +26193,10 @@ _antigravity_recovery_offer() {  # directory, conversation id
     ref="refs/worktree/cs/antigravity-recovery/$id"
     oid=$(_antigravity_recovery_tip "$session_dir" "$ref" 2>/dev/null) || return 0
     dir=$(_cs_git_at "$session_dir" rev-parse --show-toplevel 2>/dev/null) || return 0
-    head=$(_antigravity_recovery_tip "$dir" HEAD 2>/dev/null) || head=""
+    head=$(_antigravity_recovery_commit "$dir" HEAD 2>/dev/null) || head=""
     base=$(_antigravity_recovery_base "$dir" "$oid" 2>/dev/null) || base=""
     compare="$head"
-    if [[ "$base" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] && _antigravity_recovery_tip "$dir" "$base" >/dev/null 2>&1; then
+    if [[ "$base" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] && _antigravity_recovery_commit "$dir" "$base" >/dev/null 2>&1; then
         compare="$base"
     else
         base=""
