@@ -3672,6 +3672,50 @@ test_recovery_refusal_preserves_an_unstaged_deletion() {
     git -C "$dir" show-ref --verify --quiet "$ref"
 }
 
+_recovery_changes_during_apply() {
+    local race="$1" dir output status=0 ref="refs/worktree/cs/antigravity-recovery/$AGY_NEW_ID"
+    local real_git
+    dir=$(_recovery_checkout raced) || return 1
+    output=$(AGY_EXIT=1 AGY_EDITS="$dir/existing.txt $dir/unrelated.txt" "$CS_BIN" raced 2>&1) || status=$?
+    assert_eq 1 "$status" || return 1
+    git -C "$dir" restore -- existing.txt || return 1
+    real_git=$(command -v git) || return 1
+    cat > "$TEST_TMPDIR/bin/git" <<'GIT'
+#!/usr/bin/env bash
+"$RECOVERY_TEST_GIT" "$@" || exit $?
+case " $* " in
+    *' apply --check '*) ;;
+    *' apply '*)
+        if [ "$RECOVERY_TEST_RACE" = worktree ]; then
+            printf 'new local work\n' > "$CS_SESSION_DIR/unrelated.txt"
+        else
+            env -u GIT_INDEX_FILE "$RECOVERY_TEST_GIT" -C "$CS_SESSION_DIR" add existing.txt
+        fi
+        ;;
+esac
+GIT
+    chmod +x "$TEST_TMPDIR/bin/git"
+    output=$(printf r | RECOVERY_TEST_GIT="$real_git" RECOVERY_TEST_RACE="$race" \
+        AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" raced --resume 2>&1) || { echo "$output"; return 1; }
+    assert_eq edited "$(cat "$dir/existing.txt")" "the pending file received the patch" || return 1
+    if [ "$race" = worktree ]; then
+        assert_eq 'new local work' "$(cat "$dir/unrelated.txt")" "the file skipped during restore changed" || return 1
+    else
+        assert_eq edited "$("$real_git" -C "$dir" show :existing.txt)" "the real index changed during apply" || return 1
+    fi
+    assert_eq "$ref" "$("$real_git" -C "$dir" for-each-ref --format='%(refname)' "$ref")" \
+        "retain the recovery ref after the concurrent change" || return 1
+    assert_output_contains "$output" 'The patch was applied, but recovery could not be verified'
+}
+
+test_recovery_keeps_the_copy_when_an_already_saved_path_changes_during_apply() {
+    _recovery_changes_during_apply worktree
+}
+
+test_recovery_keeps_the_copy_when_the_real_index_changes_during_apply() {
+    _recovery_changes_during_apply index
+}
+
 test_recovery_offers_a_lost_executable_bit() {
     local dir output base tree oid ref="refs/worktree/cs/antigravity-recovery/$AGY_NEW_ID"
     dir=$(_recovery_checkout executable) || return 1
@@ -4405,6 +4449,8 @@ run_test test_recovery_discard_keeps_a_symbolic_autosave_and_its_target
 run_test test_recovery_ignores_clean_legacy_and_other_conversations_or_worktrees
 run_test test_recovery_refuses_conflicts_and_rechecks_head_after_preview
 run_test test_recovery_refusal_preserves_an_unstaged_deletion
+run_test test_recovery_keeps_the_copy_when_an_already_saved_path_changes_during_apply
+run_test test_recovery_keeps_the_copy_when_the_real_index_changes_during_apply
 run_test test_recovery_offers_a_lost_executable_bit
 run_test test_recovery_offers_review_for_a_snapshot_without_a_base
 run_test test_doctor_reads_back_a_quoted_cs_path

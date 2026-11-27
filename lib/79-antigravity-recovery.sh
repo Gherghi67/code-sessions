@@ -79,6 +79,7 @@ _antigravity_recovery_pending() (  # directory, base, snapshot commit, scratch d
     cd -- "$dir" || return 1
     if [ "${#saved[@]}" -gt 0 ]; then
         export GIT_INDEX_FILE="$temp/saved-index"
+        rm -f -- "$GIT_INDEX_FILE" || return 1
         _antigravity_recovery_git read-tree "$oid" || return 1
         _antigravity_recovery_git update-index -q --refresh >/dev/null || return 1
         _antigravity_recovery_git --literal-pathspecs diff-files --name-only -z -- "${saved[@]}" || return 1
@@ -88,12 +89,19 @@ _antigravity_recovery_pending() (  # directory, base, snapshot commit, scratch d
     done
 )
 
+_antigravity_recovery_staged_diff() {  # directory, base, paths...
+    local dir="$1" base="$2"
+    shift 2
+    _cs_git_at "$dir" --literal-pathspecs diff --cached --raw -z --no-abbrev --no-renames \
+        --ignore-submodules=none "$base" -- "$@"
+}
+
 # Skip files already on disk as saved. For the rest, check staged changes
 # and working-tree changes against the base. Apply only to the worktree:
 # apply --index can check out a locally deleted file even with --check.
 _antigravity_recovery_restore() (  # directory, ref, snapshot commit, base
-    local dir="$1" ref="$2" oid="$3" base="$4" temp file
-    local -a paths=()
+    local dir="$1" ref="$2" oid="$3" base="$4" temp change file
+    local -a paths=() affected=()
     [ "$(_antigravity_recovery_base "$dir" "$oid")" = "$base" ] \
         && [ "$(_antigravity_recovery_tip "$dir" "$ref")" = "$oid" ] \
         && [ "$(_antigravity_recovery_commit "$dir" HEAD)" = "$base" ] || return 1
@@ -102,8 +110,10 @@ _antigravity_recovery_restore() (  # directory, ref, snapshot commit, base
     _antigravity_recovery_pending "$dir" "$base" "$oid" "$temp" > "$temp/pending" || return 1
     while IFS= read -r -d '' file; do paths+=("$file"); done < "$temp/pending"
     [ "${#paths[@]}" -gt 0 ] || return 1
+    while IFS= read -r -d '' change && IFS= read -r -d '' file; do affected+=("$file"); done < "$temp/changes"
     _cs_git_at "$dir" --literal-pathspecs diff --cached --quiet --ignore-submodules=none \
         "$base" -- "${paths[@]}" || return 1
+    _antigravity_recovery_staged_diff "$dir" "$base" "${affected[@]}" > "$temp/staged" || return 1
     _antigravity_recovery_patch "$dir" "$base" "$oid" "${paths[@]}" > "$temp/patch" || return 1
     _antigravity_recovery_clear_git_env
     cd -- "$dir" || return 1
@@ -114,11 +124,19 @@ _antigravity_recovery_restore() (  # directory, ref, snapshot commit, base
     _antigravity_recovery_git apply --check "$temp/patch" || return 1
     [ "$(_antigravity_recovery_commit "$dir" HEAD)" = "$base" ] \
         && [ "$(_antigravity_recovery_tip "$dir" "$ref")" = "$oid" ] \
+        && _antigravity_recovery_git --literal-pathspecs diff-files --quiet -- "${paths[@]}" \
         && _cs_git_at "$dir" --literal-pathspecs diff --cached --quiet --ignore-submodules=none \
             "$base" -- "${paths[@]}" || return 1
     _antigravity_recovery_git apply "$temp/patch" || return 1
-    _cs_git_at "$dir" update-ref --no-deref -d "$ref" "$oid" \
-        || warn 'The files were restored. The recovery copy is still available.'
+    # The lease cannot exclude another Git process or editor. Keep the copy
+    # if any affected path, the real index, HEAD, or the ref changed.
+    _antigravity_recovery_pending "$dir" "$base" "$oid" "$temp" > "$temp/remaining" \
+        && [ ! -s "$temp/remaining" ] \
+        && _antigravity_recovery_staged_diff "$dir" "$base" "${affected[@]}" > "$temp/staged-now" \
+        && cmp -s "$temp/staged" "$temp/staged-now" \
+        && [ "$(_antigravity_recovery_commit "$dir" HEAD)" = "$base" ] \
+        && [ "$(_antigravity_recovery_tip "$dir" "$ref")" = "$oid" ] || return 2
+    _cs_git_at "$dir" update-ref --no-deref -d "$ref" "$oid" || return 2
 )
 
 _antigravity_recovery_review() {  # directory, comparison commit, snapshot commit
@@ -138,7 +156,7 @@ _antigravity_recovery_discard() {  # directory, recovery ref, snapshot commit, c
 
 _antigravity_recovery_offer() (  # directory, conversation id
     local session_dir="$1" id="$2" dir ref oid head base compare summary answer="" restore="" submodule=""
-    local temp
+    local temp result=0
     local GIT_NO_REPLACE_OBJECTS=1
     export GIT_NO_REPLACE_OBJECTS
     _is_uuid "$id" || return 0
@@ -182,12 +200,15 @@ _antigravity_recovery_offer() (  # directory, conversation id
     printf '\n'
     case "$answer" in
         [rR])
-            if [ -n "$restore" ] && cs_run_with_lease "$session_dir/.cs" _antigravity_recovery_restore "$dir" "$ref" "$oid" "$base"; then
-                printf 'Restored the Antigravity snapshot to the working tree.\n'
-            else
-                warn 'Could not restore the Antigravity snapshot safely. The recovery copy is still available.'
-                _antigravity_recovery_review "$dir" "$compare" "$oid"
-            fi
+            [ -n "$restore" ] && cs_run_with_lease "$session_dir/.cs" \
+                _antigravity_recovery_restore "$dir" "$ref" "$oid" "$base" || result=$?
+            case "$result" in
+                0) printf 'Restored the Antigravity snapshot to the working tree.\n' ;;
+                2) warn 'The patch was applied, but recovery could not be verified.'
+                    _antigravity_recovery_review "$dir" "$compare" "$oid" ;;
+                *) warn 'Could not restore the Antigravity snapshot safely. The recovery copy is still available.'
+                    _antigravity_recovery_review "$dir" "$compare" "$oid" ;;
+            esac
             ;;
         [vV]) _antigravity_recovery_review "$dir" "$compare" "$oid" ;;
         [dD])
