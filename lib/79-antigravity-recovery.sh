@@ -51,55 +51,70 @@ _antigravity_recovery_patch() {  # directory, base, snapshot commit
         --ignore-submodules=none --submodule=short --src-prefix=a/ --dst-prefix=b/ "$base" "$oid" -- "$@"
 }
 
+_antigravity_recovery_git() {
+    git -c core.hooksPath=/dev/null -c core.fsmonitor= -c core.splitIndex=false -c core.sparseCheckout=false \
+        -c core.fileMode=true -c core.symlinks=true -c apply.ignoreWhitespace=no -c apply.whitespace=nowarn "$@"
+}
+
+_antigravity_recovery_clear_git_env() {
+    local var
+    while IFS= read -r var; do unset "$var"; done < <(git rev-parse --local-env-vars)
+    export GIT_NO_REPLACE_OBJECTS=1
+}
+
+# Print the NUL-delimited paths whose saved state is absent from the worktree.
+# Return 2 when a gitlink changed, since a patch cannot restore its checkout.
+_antigravity_recovery_pending() (  # directory, base, snapshot commit, scratch directory
+    local dir="$1" base="$2" oid="$3" temp="$4" change file
+    local -a saved=() deleted=()
+    _cs_git_at "$dir" diff --raw -z --no-renames --ignore-submodules=none "$base" "$oid" -- > "$temp/changes" || return 1
+    while IFS= read -r -d '' change && IFS= read -r -d '' file; do
+        case "$change" in ':160000 '*|:??????' 160000 '*) return 2 ;; esac
+        case "$change" in :??????' 000000 '*) deleted+=("$file") ;; *) saved+=("$file") ;; esac
+    done < "$temp/changes"
+
+    _antigravity_recovery_clear_git_env
+    cd -- "$dir" || return 1
+    if [ "${#saved[@]}" -gt 0 ]; then
+        export GIT_INDEX_FILE="$temp/saved-index"
+        _antigravity_recovery_git read-tree "$oid" || return 1
+        _antigravity_recovery_git update-index -q --refresh >/dev/null || return 1
+        _antigravity_recovery_git --literal-pathspecs diff-files --name-only -z -- "${saved[@]}" || return 1
+    fi
+    for file in ${deleted[@]+"${deleted[@]}"}; do
+        if [ -L "$file" ] || { [ -e "$file" ] && [ ! -d "$file" ]; }; then printf '%s\0' "$file"; fi
+    done
+)
+
 # Skip files already on disk as saved. For the rest, check staged changes
 # and working-tree changes against the base. Apply only to the worktree:
 # apply --index can check out a locally deleted file even with --check.
 _antigravity_recovery_restore() (  # directory, ref, snapshot commit, base
-    local dir="$1" ref="$2" oid="$3" base="$4" temp var change file
-    local -a saved=() deleted=() paths=()
-    local -a git_options=(-c core.hooksPath=/dev/null -c core.fsmonitor= -c core.splitIndex=false \
-        -c core.sparseCheckout=false -c core.fileMode=true -c apply.ignoreWhitespace=no -c apply.whitespace=nowarn)
+    local dir="$1" ref="$2" oid="$3" base="$4" temp file
+    local -a paths=()
     [ "$(_antigravity_recovery_base "$dir" "$oid")" = "$base" ] \
         && [ "$(_antigravity_recovery_tip "$dir" "$ref")" = "$oid" ] \
         && [ "$(_antigravity_recovery_commit "$dir" HEAD)" = "$base" ] || return 1
     temp=$(mktemp -d "${TMPDIR:-/tmp}/cs-agy-recovery.XXXXXX") || return 1
     trap 'rm -rf -- "$temp"' EXIT
-    _cs_git_at "$dir" diff --raw -z --no-renames --ignore-submodules=none "$base" "$oid" -- > "$temp/paths" || return 1
-    while IFS= read -r -d '' change && IFS= read -r -d '' file; do
-        # Git can apply a gitlink to an index without restoring its checkout.
-        case "$change" in ':160000 '*|:??????' 160000 '*) return 1 ;; esac
-        case "$change" in :??????' 000000 '*) deleted+=("$file") ;; *) saved+=("$file") ;; esac
-    done < "$temp/paths"
-
-    # The normal Git wrappers clear inherited repository settings. Here we
-    # need to supply our own index after clearing them.
-    while IFS= read -r var; do unset "$var"; done < <(git rev-parse --local-env-vars)
-    export GIT_NO_REPLACE_OBJECTS=1
-    cd -- "$dir" || return 1
-    if [ "${#saved[@]}" -gt 0 ]; then
-        export GIT_INDEX_FILE="$temp/saved-index"
-        git "${git_options[@]}" read-tree "$oid" || return 1
-        git "${git_options[@]}" update-index -q --refresh >/dev/null || return 1
-        git "${git_options[@]}" --literal-pathspecs diff-files --name-only -z -- "${saved[@]}" > "$temp/pending" || return 1
-        while IFS= read -r -d '' file; do paths+=("$file"); done < "$temp/pending"
-    fi
-    for file in ${deleted[@]+"${deleted[@]}"}; do
-        if [ -L "$file" ] || { [ -e "$file" ] && [ ! -d "$file" ]; }; then paths+=("$file"); fi
-    done
+    _antigravity_recovery_pending "$dir" "$base" "$oid" "$temp" > "$temp/pending" || return 1
+    while IFS= read -r -d '' file; do paths+=("$file"); done < "$temp/pending"
     [ "${#paths[@]}" -gt 0 ] || return 1
     _cs_git_at "$dir" --literal-pathspecs diff --cached --quiet --ignore-submodules=none \
         "$base" -- "${paths[@]}" || return 1
     _antigravity_recovery_patch "$dir" "$base" "$oid" "${paths[@]}" > "$temp/patch" || return 1
+    _antigravity_recovery_clear_git_env
+    cd -- "$dir" || return 1
     export GIT_INDEX_FILE="$temp/base-index"
-    git "${git_options[@]}" read-tree "$base" || return 1
-    git "${git_options[@]}" update-index -q --refresh >/dev/null || return 1
-    git "${git_options[@]}" --literal-pathspecs diff-files --quiet -- "${paths[@]}" || return 1
-    git "${git_options[@]}" apply --check "$temp/patch" || return 1
+    _antigravity_recovery_git read-tree "$base" || return 1
+    _antigravity_recovery_git update-index -q --refresh >/dev/null || return 1
+    _antigravity_recovery_git --literal-pathspecs diff-files --quiet -- "${paths[@]}" || return 1
+    _antigravity_recovery_git apply --check "$temp/patch" || return 1
     [ "$(_antigravity_recovery_commit "$dir" HEAD)" = "$base" ] \
         && [ "$(_antigravity_recovery_tip "$dir" "$ref")" = "$oid" ] \
         && _cs_git_at "$dir" --literal-pathspecs diff --cached --quiet --ignore-submodules=none \
             "$base" -- "${paths[@]}" || return 1
-    git "${git_options[@]}" apply "$temp/patch" || return 1
+    _antigravity_recovery_git apply "$temp/patch" || return 1
     _cs_git_at "$dir" update-ref --no-deref -d "$ref" "$oid" \
         || warn 'The files were restored. The recovery copy is still available.'
 )
@@ -119,8 +134,9 @@ _antigravity_recovery_discard() {  # directory, recovery ref, snapshot commit, c
     fi
 }
 
-_antigravity_recovery_offer() {  # directory, conversation id
+_antigravity_recovery_offer() (  # directory, conversation id
     local session_dir="$1" id="$2" dir ref oid head base compare summary answer="" restore="" submodule=""
+    local temp
     local GIT_NO_REPLACE_OBJECTS=1
     export GIT_NO_REPLACE_OBJECTS
     _is_uuid "$id" || return 0
@@ -141,13 +157,12 @@ _antigravity_recovery_offer() {  # directory, conversation id
     summary=$(_cs_git_at "$dir" -c core.quotePath=true diff --stat=80,48,12 --no-renames --no-ext-diff \
         --no-textconv --no-color --ignore-submodules=none "$compare" "$oid" -- 2>/dev/null) || return 0
     [ -n "$summary" ] || return 0
-    # A worktree-only apply check ignores submodule commit IDs.
-    if _cs_git_at "$dir" diff --raw --no-renames --ignore-submodules=none "$compare" "$oid" -- 2>/dev/null \
-        | grep -E '^:(160000|[0-7]{6} 160000) ' >/dev/null; then
+    temp=$(mktemp -d "${TMPDIR:-/tmp}/cs-agy-recovery.XXXXXX") || return 0
+    trap 'rm -rf -- "$temp"' EXIT
+    if _antigravity_recovery_pending "$dir" "$compare" "$oid" "$temp" > "$temp/pending" 2>/dev/null; then
+        [ -s "$temp/pending" ] || return 0
+    elif [ "$?" -eq 2 ]; then
         submodule=1
-    elif _antigravity_recovery_patch "$dir" "$compare" "$oid" 2>/dev/null \
-        | _cs_git_at "$dir" -c apply.ignoreWhitespace=no apply --check --reverse --whitespace=nowarn 2>/dev/null; then
-        return 0
     fi
 
     printf '\nAntigravity crash recovery for %s\n%s\n' "$id" "$summary"
@@ -181,4 +196,4 @@ _antigravity_recovery_offer() {  # directory, conversation id
             fi
             ;;
     esac
-}
+)

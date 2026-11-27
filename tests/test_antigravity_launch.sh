@@ -3672,6 +3672,24 @@ test_recovery_refusal_preserves_an_unstaged_deletion() {
     git -C "$dir" show-ref --verify --quiet "$ref"
 }
 
+test_recovery_offers_a_lost_executable_bit() {
+    local dir output base tree oid ref="refs/worktree/cs/antigravity-recovery/$AGY_NEW_ID"
+    dir=$(_recovery_checkout executable) || return 1
+    output=$("$CS_BIN" executable 2>&1) || { echo "$output"; return 1; }
+    base=$(git -C "$dir" rev-parse HEAD) || return 1
+    chmod +x "$dir/existing.txt" && git -C "$dir" add existing.txt || return 1
+    tree=$(git -C "$dir" write-tree) || return 1
+    oid=$(git -C "$dir" commit-tree "$tree" -p "$base" -m snapshot -m "cs-base: $base") || return 1
+    git -C "$dir" update-ref "$ref" "$oid" && git -C "$dir" restore --staged -- existing.txt || return 1
+    output=$(AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" executable --resume </dev/null 2>&1) || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" 'Antigravity crash recovery' "the saved mode is already on disk" || return 1
+    chmod -x "$dir/existing.txt" && git -C "$dir" config core.fileMode false || return 1
+    output=$(printf r | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" executable --resume 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" 'Restored the Antigravity snapshot' || return 1
+    [ -x "$dir/existing.txt" ] || { echo '  FAIL: the executable bit was not restored'; return 1; }
+    assert_eq base "$(cat "$dir/existing.txt")"
+}
+
 test_recovery_offers_review_for_a_snapshot_without_a_base() {
     local dir output status=0
     dir=$(_recovery_checkout unborn) || return 1
@@ -4387,6 +4405,7 @@ run_test test_recovery_discard_keeps_a_symbolic_autosave_and_its_target
 run_test test_recovery_ignores_clean_legacy_and_other_conversations_or_worktrees
 run_test test_recovery_refuses_conflicts_and_rechecks_head_after_preview
 run_test test_recovery_refusal_preserves_an_unstaged_deletion
+run_test test_recovery_offers_a_lost_executable_bit
 run_test test_recovery_offers_review_for_a_snapshot_without_a_base
 run_test test_doctor_reads_back_a_quoted_cs_path
 run_test test_the_hook_never_writes_through_a_link
