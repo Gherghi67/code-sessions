@@ -120,11 +120,17 @@ _cs_run_record_child() {  # meta_dir, pid
     signature=$(LC_ALL=C "${CS_PS_BIN:-ps}" -o lstart= -p "$pid" 2>/dev/null | sed 's/^[[:space:]]*//') || signature=""
     tmp=$(mktemp "$meta/local/.run-child.XXXXXX") || return 1
     if ! jq --argjson pid "$pid" --arg started "$signature" \
-        '.native_pid = $pid | .native_started = $started' "$meta/local/run-lease.json" > "$tmp"; then
+        '.native_pid = $pid | .native_started = $started | del(.native_exit)' "$meta/local/run-lease.json" > "$tmp"; then
         rm -f "$tmp"
         return 1
     fi
     mv "$tmp" "$meta/local/run-lease.json" || { rm -f "$tmp"; return 1; }
+}
+
+_cs_run_record_native_exit() {  # meta_dir, exit_status
+    local lease="$1/local/run-lease.json"
+    [ -f "$lease" ] && [ ! -L "$lease" ] || return 1
+    cs_write_atomic "$lease" jq --argjson status "$2" '.native_exit = $status' "$lease"
 }
 
 _cs_run_publish_child() {  # helper_dir, pid
@@ -171,7 +177,14 @@ cs_run_child() {  # executable, arguments...
     fi
     printf 'run\n' > "$_cs_run_gate"
     wait "$_cs_run_child_pid" || status=$?
+    _cs_run_native_status="$status"
     _cs_run_child_pid=""
+    if [ "${CS_RUN_ENGINE:-}" = antigravity ]; then
+        # Cleanup can itself be interrupted. Preserve the observed status
+        # while this launcher still owns the lease.
+        cs_run_with_lease "$_cs_run_meta" _cs_run_record_native_exit "$_cs_run_meta" "$status" \
+            || warn 'Could not record the Antigravity exit status for crash recovery.'
+    fi
     rm -f "$_cs_run_gate"
     _cs_run_gate=""
     return "$status"
@@ -196,7 +209,7 @@ cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent, 
     [ -z "$remote_mode" ] || [ "$engine" = claude ] || { printf 'Error: --remote requires --engine claude\n' >&2; return 1; }
     local _cs_run_meta="$directory/.cs" _cs_run_active=0 _cs_run_child_pid="" _cs_run_gate="" _cs_run_helper_pid=""
     local _cs_run_helper_dir="" _cs_run_name="$name"
-    local _cs_run_interrupted=""
+    local _cs_run_interrupted="" _cs_run_native_status=""
     local _cs_run_skip_engine_record=""
     local _cs_run_carry_preview_dir="" _cs_run_carry_preview_id=""
     local _cs_run_carry_vault_file="" _cs_run_carry_vault_parent_id=""

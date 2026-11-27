@@ -4871,7 +4871,8 @@ _cs_acquire_session_lock_guarded() {  # meta_dir, force
     if [ -e "$meta/session.lock" ] && [ -z "$lock_pid" ]; then
         warn "Removing stale session lock (PID $(_cs_plain_name "$(read_lock_pid "$meta")" 40))"
         if declare -F _antigravity_recovery_record_interruption >/dev/null; then
-            _antigravity_recovery_record_interruption "$meta" || true
+            _antigravity_recovery_record_interruption "$meta" \
+                || warn 'Could not retain Antigravity crash recovery. The autosaves remain available for manual recovery.'
         fi
     fi
     umask 077
@@ -4956,8 +4957,10 @@ _cs_release_session_lock_guarded() {  # meta_dir
     [ ! -L "$meta/session.lock" ] && [ -f "$meta/session.lock" ] || return 0
     if [ -f "$meta/local/run-lease.json" ]; then
         cs_run_lease_owned "$meta" || return 0
-        if [ -n "${_cs_run_interrupted:-}" ] && declare -F _antigravity_recovery_record_interruption >/dev/null; then
-            _antigravity_recovery_record_interruption "$meta" || true
+        if [ -n "${_cs_run_interrupted:-}" ] && [ "${_cs_run_native_status:-}" != 0 ] \
+            && declare -F _antigravity_recovery_record_interruption >/dev/null; then
+            _antigravity_recovery_record_interruption "$meta" \
+                || warn 'Could not retain Antigravity crash recovery. The autosaves remain available for manual recovery.'
         fi
         rm -f "$meta/session.lock" "$meta/local/run-lease.json"
     elif [ -z "${CS_RUN_ID:-}" ]; then
@@ -5273,11 +5276,17 @@ _cs_run_record_child() {  # meta_dir, pid
     signature=$(LC_ALL=C "${CS_PS_BIN:-ps}" -o lstart= -p "$pid" 2>/dev/null | sed 's/^[[:space:]]*//') || signature=""
     tmp=$(mktemp "$meta/local/.run-child.XXXXXX") || return 1
     if ! jq --argjson pid "$pid" --arg started "$signature" \
-        '.native_pid = $pid | .native_started = $started' "$meta/local/run-lease.json" > "$tmp"; then
+        '.native_pid = $pid | .native_started = $started | del(.native_exit)' "$meta/local/run-lease.json" > "$tmp"; then
         rm -f "$tmp"
         return 1
     fi
     mv "$tmp" "$meta/local/run-lease.json" || { rm -f "$tmp"; return 1; }
+}
+
+_cs_run_record_native_exit() {  # meta_dir, exit_status
+    local lease="$1/local/run-lease.json"
+    [ -f "$lease" ] && [ ! -L "$lease" ] || return 1
+    cs_write_atomic "$lease" jq --argjson status "$2" '.native_exit = $status' "$lease"
 }
 
 _cs_run_publish_child() {  # helper_dir, pid
@@ -5324,7 +5333,14 @@ cs_run_child() {  # executable, arguments...
     fi
     printf 'run\n' > "$_cs_run_gate"
     wait "$_cs_run_child_pid" || status=$?
+    _cs_run_native_status="$status"
     _cs_run_child_pid=""
+    if [ "${CS_RUN_ENGINE:-}" = antigravity ]; then
+        # Cleanup can itself be interrupted. Preserve the observed status
+        # while this launcher still owns the lease.
+        cs_run_with_lease "$_cs_run_meta" _cs_run_record_native_exit "$_cs_run_meta" "$status" \
+            || warn 'Could not record the Antigravity exit status for crash recovery.'
+    fi
     rm -f "$_cs_run_gate"
     _cs_run_gate=""
     return "$status"
@@ -5349,7 +5365,7 @@ cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent, 
     [ -z "$remote_mode" ] || [ "$engine" = claude ] || { printf 'Error: --remote requires --engine claude\n' >&2; return 1; }
     local _cs_run_meta="$directory/.cs" _cs_run_active=0 _cs_run_child_pid="" _cs_run_gate="" _cs_run_helper_pid=""
     local _cs_run_helper_dir="" _cs_run_name="$name"
-    local _cs_run_interrupted=""
+    local _cs_run_interrupted="" _cs_run_native_status=""
     local _cs_run_skip_engine_record=""
     local _cs_run_carry_preview_dir="" _cs_run_carry_preview_id=""
     local _cs_run_carry_vault_file="" _cs_run_carry_vault_parent_id=""
@@ -26067,28 +26083,30 @@ _antigravity_queue_tool_failure() {  # payload
     cs_run_with_lease "$CS_SESSION_DIR/.cs" _antigravity_queue_record_error "$step"
 }
 # The caller holds the session guard. A stale lease with a registered native
-# child, or a managed run whose child was interrupted, is evidence a run did
-# not finish cleanly. Old autosave refs have no run trailer and cannot prove it.
+# child that has no recorded clean exit can still have interrupted autosaves.
+# Old autosave refs have no run trailer and cannot prove it.
 _antigravity_recovery_record_interruption() {  # meta_dir
-    local meta="$1" dir="${1%/.cs}" lease="$1/local/run-lease.json" owner run oid type ref target saved_run id
+    local meta="$1" dir="${1%/.cs}" lease="$1/local/run-lease.json" owner run oid type ref target saved_run id status=0
     local GIT_NO_REPLACE_OBJECTS=1
     export GIT_NO_REPLACE_OBJECTS
     [ -f "$meta/session.lock" ] && [ ! -L "$meta/session.lock" ] && [ -f "$lease" ] && [ ! -L "$lease" ] || return 0
     IFS= read -r owner < "$meta/session.lock" || return 0
     run=$(jq -er --arg owner "$owner" 'select(.engine == "antigravity" and (.owner_pid | tostring) == $owner
-        and (.native_pid | type == "number" and . > 1)) | .run_id | strings' "$lease" 2>/dev/null) || return 0
+        and (.native_pid | type == "number" and . > 1) and .native_exit != 0) | .run_id | strings' "$lease" 2>/dev/null) || return 0
     _is_uuid "$run" || return 0
+    _cs_git_at "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
 
     local snapshots
     snapshots=$(_cs_git_at "$dir" for-each-ref \
         --format='%(objectname) %(objecttype) %(refname) target:%(symref) %(trailers:key=cs-run,valueonly,unfold,separator=%x20)' \
-        refs/worktree/cs/session/ 2>/dev/null) || return 0
+        refs/worktree/cs/session/ 2>/dev/null) || return 1
     while IFS=' ' read -r oid type ref target saved_run; do
         id="${ref##*/}"
         [ "$saved_run" = "$run" ] && [ "$type" = commit ] && [ "$target" = target: ] \
             && [ "$ref" = "refs/worktree/cs/session/$id" ] && _is_uuid "$id" || continue
-        _cs_git_at "$dir" update-ref --no-deref "refs/worktree/cs/antigravity-recovery/$id" "$oid" || return 1
+        _cs_git_at "$dir" update-ref --no-deref "refs/worktree/cs/antigravity-recovery/$id" "$oid" || status=1
     done < <(printf '%s\n' "$snapshots")
+    return "$status"
 }
 
 _antigravity_recovery_tip() {  # directory, ref

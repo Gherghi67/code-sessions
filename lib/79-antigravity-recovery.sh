@@ -1,28 +1,30 @@
 # ABOUTME: Retains Antigravity snapshots from interrupted managed runs and offers them on an exact reopen.
 
 # The caller holds the session guard. A stale lease with a registered native
-# child, or a managed run whose child was interrupted, is evidence a run did
-# not finish cleanly. Old autosave refs have no run trailer and cannot prove it.
+# child that has no recorded clean exit can still have interrupted autosaves.
+# Old autosave refs have no run trailer and cannot prove it.
 _antigravity_recovery_record_interruption() {  # meta_dir
-    local meta="$1" dir="${1%/.cs}" lease="$1/local/run-lease.json" owner run oid type ref target saved_run id
+    local meta="$1" dir="${1%/.cs}" lease="$1/local/run-lease.json" owner run oid type ref target saved_run id status=0
     local GIT_NO_REPLACE_OBJECTS=1
     export GIT_NO_REPLACE_OBJECTS
     [ -f "$meta/session.lock" ] && [ ! -L "$meta/session.lock" ] && [ -f "$lease" ] && [ ! -L "$lease" ] || return 0
     IFS= read -r owner < "$meta/session.lock" || return 0
     run=$(jq -er --arg owner "$owner" 'select(.engine == "antigravity" and (.owner_pid | tostring) == $owner
-        and (.native_pid | type == "number" and . > 1)) | .run_id | strings' "$lease" 2>/dev/null) || return 0
+        and (.native_pid | type == "number" and . > 1) and .native_exit != 0) | .run_id | strings' "$lease" 2>/dev/null) || return 0
     _is_uuid "$run" || return 0
+    _cs_git_at "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
 
     local snapshots
     snapshots=$(_cs_git_at "$dir" for-each-ref \
         --format='%(objectname) %(objecttype) %(refname) target:%(symref) %(trailers:key=cs-run,valueonly,unfold,separator=%x20)' \
-        refs/worktree/cs/session/ 2>/dev/null) || return 0
+        refs/worktree/cs/session/ 2>/dev/null) || return 1
     while IFS=' ' read -r oid type ref target saved_run; do
         id="${ref##*/}"
         [ "$saved_run" = "$run" ] && [ "$type" = commit ] && [ "$target" = target: ] \
             && [ "$ref" = "refs/worktree/cs/session/$id" ] && _is_uuid "$id" || continue
-        _cs_git_at "$dir" update-ref --no-deref "refs/worktree/cs/antigravity-recovery/$id" "$oid" || return 1
+        _cs_git_at "$dir" update-ref --no-deref "refs/worktree/cs/antigravity-recovery/$id" "$oid" || status=1
     done < <(printf '%s\n' "$snapshots")
+    return "$status"
 }
 
 _antigravity_recovery_tip() {  # directory, ref
