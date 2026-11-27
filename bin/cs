@@ -26128,11 +26128,15 @@ _antigravity_recovery_base() {  # directory, snapshot commit
     _cs_git_at "$1" show -s --format='%(trailers:key=cs-base,valueonly,unfold)' "$2"
 }
 
+_CS_ANTIGRAVITY_RECOVERY_PATCH_ARGS=(
+    --literal-pathspecs diff --binary --no-renames --no-ext-diff --no-textconv --no-color
+    --ignore-submodules=none --submodule=short --src-prefix=a/ --dst-prefix=b/
+)
+
 _antigravity_recovery_patch() {  # directory, base, snapshot commit
     local dir="$1" base="$2" oid="$3"
     shift 3
-    _cs_git_at "$dir" --literal-pathspecs diff --binary --no-renames --no-ext-diff --no-textconv --no-color \
-        --ignore-submodules=none --submodule=short --src-prefix=a/ --dst-prefix=b/ "$base" "$oid" -- "$@"
+    _cs_git_at "$dir" "${_CS_ANTIGRAVITY_RECOVERY_PATCH_ARGS[@]}" "$base" "$oid" -- "$@"
 }
 
 _antigravity_recovery_git() {
@@ -26222,7 +26226,9 @@ _antigravity_recovery_restore() (  # directory, ref, snapshot commit, base
 )
 
 _antigravity_recovery_review() {  # directory, comparison commit, snapshot commit
-    printf 'To inspect the saved patch from another shell, run:\n  git -C %q diff %s %s --\n' "$1" "$2" "$3"
+    printf 'To inspect the saved patch from another shell, run:\n  GIT_NO_REPLACE_OBJECTS=1 git -C %q' "$1"
+    printf ' %q' "${_CS_ANTIGRAVITY_RECOVERY_PATCH_ARGS[@]}" "$2" "$3" --
+    printf '\n'
 }
 
 _antigravity_recovery_discard() {  # directory, recovery ref, snapshot commit, conversation id

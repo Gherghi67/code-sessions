@@ -3782,6 +3782,26 @@ test_recovery_offers_review_for_a_snapshot_without_a_base() {
     assert_not_exists "$dir/existing.txt"
 }
 
+test_recovery_review_shows_the_saved_blob_without_git_replacements() {
+    local dir output status=0 saved_blob replacement command patch
+    local ref="refs/worktree/cs/antigravity-recovery/$AGY_NEW_ID"
+    export CS_SESSIONS_ROOT="$TEST_TMPDIR/quoted path"
+    mkdir -p "$CS_SESSIONS_ROOT" || return 1
+    dir=$(_recovery_checkout review) || return 1
+    output=$(AGY_EXIT=1 AGY_EDITS=existing.txt "$CS_BIN" review 2>&1) || status=$?
+    assert_eq 1 "$status" || return 1
+    saved_blob=$(git -C "$dir" rev-parse "$ref:existing.txt") || return 1
+    replacement=$(printf 'replacement\n' | git -C "$dir" hash-object -w --stdin) || return 1
+    git -C "$dir" replace "$saved_blob" "$replacement" && git -C "$dir" restore -- existing.txt || return 1
+
+    output=$(printf v | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" review --resume 2>&1) || { echo "$output"; return 1; }
+    command=$(printf '%s\n' "$output" | sed -n '/To inspect the saved patch/{n;p;}')
+    [ -n "$command" ] || { echo "$output"; return 1; }
+    patch=$(bash -c "$command") || return 1
+    assert_output_contains "$patch" '^+edited$' "the review command shows the raw saved blob" || return 1
+    assert_output_not_contains "$patch" '^+replacement$' "a replacement ref cannot rewrite the reviewed patch"
+}
+
 # cs's status line as an install puts it, in an install folder of the test's
 # own (STATUSLINE_DIR, named by $1): the adapter beside cs-statusline.
 _statusline_install() {  # [folder name]
@@ -4488,6 +4508,7 @@ run_test test_recovery_keeps_the_copy_when_an_already_saved_path_changes_during_
 run_test test_recovery_keeps_the_copy_when_the_real_index_changes_during_apply
 run_test test_recovery_offers_a_lost_executable_bit
 run_test test_recovery_offers_review_for_a_snapshot_without_a_base
+run_test test_recovery_review_shows_the_saved_blob_without_git_replacements
 run_test test_doctor_reads_back_a_quoted_cs_path
 run_test test_the_hook_never_writes_through_a_link
 run_test test_a_vault_planted_mid_run_is_neither_read_nor_written_through

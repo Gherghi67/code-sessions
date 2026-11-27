@@ -836,7 +836,6 @@ Skills that check before relying on a capability refuse cleanly
 | --- | --- |
 | A wake for mail that comes while the conversation sits idle at its prompt | `agy` has no event for that moment, so the mail shows at the next prompt ([Mail](#mail)). |
 | Mail and the binding in a conversation the run never bound, opened with `/resume` or `/fork` after the first turn | The bound conversation keeps the digest and wake. Reopen and pick the conversation with `/resume` before the first turn ([Mail](#mail), [Forks](#forks)). `/clear` and `/new` move the session, and a conversation that held it earlier in the run takes it back when you return to it with `/resume` ([Rotation through /clear](#rotation-through-clear)). |
-| Crash-recovery prompt | Edits are snapshotted ([Recovery copies](#recovery-copies)), but nothing offers them back; restore by hand. |
 | `--remote` | Claude only. |
 
 A feature worktree (`cs <base>@<feature> --engine antigravity`) launches like
@@ -980,6 +979,8 @@ interrupted managed run, `cs` shows the saved changes if they differ from
 what is already on disk. The offer appears before `agy` starts. Press `r`
 to restore to the working tree, `v` for a command to review the saved patch,
 `d` to discard the recovery copy, or Enter to keep it for a later reopen.
+The review command disables replacement refs, external diff tools, and text
+conversion.
 Noninteractive opens also keep the copy for later. A clean exit keeps the
 ordinary autosave ref without creating an offer.
 
